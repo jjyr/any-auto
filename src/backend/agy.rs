@@ -79,7 +79,15 @@ impl AgyBackend {
             .env("AGY_AUTO_APPROVE_REVIEWER", "1")
             .env_remove("ANTIGRAVITY_LS_ADDRESS")
             .env_remove("ANTIGRAVITY_CSRF_TOKEN");
-        let raw = process::call("agy", command, &args, id).await?;
+        let state_path = self
+            .workspace
+            .parent()
+            .unwrap()
+            .join("reviewer_session.json");
+        let raw = process::call_with_usage("agy", command, &args, id, |raw| {
+            crate::usage::record(&state_path, cid, raw)
+        })
+        .await?;
         let v: Value = serde_json::from_str(&raw).context("Invalid agy response JSON")?;
         anyhow::ensure!(v["status"] == "SUCCESS", "agy failed: {}", v);
         Ok(v)

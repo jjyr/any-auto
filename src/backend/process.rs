@@ -6,9 +6,19 @@ use tokio::process::Command;
 
 pub(super) async fn call(
     program: &str,
+    command: Command,
+    args: &[&str],
+    id: &str,
+) -> Result<String> {
+    call_with_usage(program, command, args, id, |_| None).await
+}
+
+pub(super) async fn call_with_usage(
+    program: &str,
     mut command: Command,
     args: &[&str],
     id: &str,
+    usage: impl FnOnce(&str) -> Option<crate::usage::Tokens>,
 ) -> Result<String> {
     let started = std::time::Instant::now();
     let path = config::backend_path().context("Cannot construct backend search PATH")?;
@@ -55,10 +65,16 @@ pub(super) async fn call(
             bail!("{message}");
         }
     };
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let usage_delta = if output.status.success() {
+        usage(&raw)
+    } else {
+        None
+    };
     audit::record(
         id,
         &format!("{program}_response"),
-        json!({"stdout":String::from_utf8_lossy(&output.stdout),
+        json!({"stdout":raw, "usage_delta":usage_delta,
             "stderr":String::from_utf8_lossy(&output.stderr), "exit_code":output.status.code(),
             "duration_ms":started.elapsed().as_millis()}),
     );

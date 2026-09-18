@@ -523,7 +523,10 @@ esac
     assert!(!s.run(&["logs", "show", "missing"]).status.success());
     assert!(!s.run(&["logs", "--limit", "0"]).status.success());
     assert!(!s.socket.exists(), "logs must not spawn a daemon");
-    let path = s.dir.path().join("logs/approvals.jsonl");
+    let path = agy_auto_approve::audit::daily_path(
+        &s.dir.path().join("logs"),
+        chrono::Utc::now().date_naive(),
+    );
     assert_eq!(
         fs::metadata(path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -686,7 +689,10 @@ fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
     let next = follower.next();
     assert_eq!(next["tool"], "view_file");
     assert_ne!(next["id"], latest[0]["id"]);
-    let log = s.dir.path().join("logs/approvals.jsonl");
+    let log = agy_auto_approve::audit::daily_path(
+        &s.dir.path().join("logs"),
+        chrono::Utc::now().date_naive(),
+    );
     let event = json!({"event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
     let split = event.len() / 2;
     let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();

@@ -1,4 +1,4 @@
-use agy_auto_approve::{audit, config, daemon, pipeline, register, upgrade};
+use agy_auto_approve::{audit, config, daemon, pipeline, register, stats, upgrade};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -7,7 +7,7 @@ use std::io::Read;
 #[derive(Parser)]
 #[command(version, about = "Antigravity approval hook and daemon management")]
 struct Cli {
-    /// Backend mode. Hooks auto-detect the host; other commands default to cli.
+    /// Backend mode. Hooks auto-detect; stats includes all modes; other commands default to cli.
     #[arg(long, global = true, value_enum)]
     mode: Option<config::Mode>,
     #[command(subcommand)]
@@ -17,6 +17,8 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
+    /// Show rolling 24-hour, 7-day and 30-day model approval usage (all modes by default).
+    Stats,
     /// Show global reviewer settings, or edit the global TOML file.
     Config {
         #[arg(long, conflicts_with = "json")]
@@ -82,6 +84,7 @@ enum LogsCommand {
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    let selected_mode = cli.mode;
     config::set_mode(cli.mode.unwrap_or_else(|| {
         if matches!(cli.command, Commands::Hook) {
             config::Mode::for_hook()
@@ -90,6 +93,7 @@ async fn main() -> Result<()> {
         }
     }));
     match cli.command {
+        Commands::Stats => stats::print(selected_mode)?,
         Commands::Hook => {
             let mut bytes = Vec::new();
             let parsed = std::io::stdin()

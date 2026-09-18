@@ -121,7 +121,7 @@ List options can be combined. Normal lists show newest records first. Follow mod
 
 `logs show APPROVAL_ID` outputs all recorded events for an exact approval ID as JSON, including hook input, reviewer input/output, and the final decision. It cannot be combined with list options. Incomplete approvals may have events available through `show` even though they do not appear in summaries.
 
-Logs are read directly from `~/.gemini/agy-auto-approve/approvals.jsonl`; the daemon does not need to be running. These records include `mode` and contain approval-service and backend output, not the subsequent tool execution's stdout/stderr. Logs are not automatically rotated or cleaned up.
+Logs are read directly from `~/.gemini/agy-auto-approve/approvals-YYYY-MM-DD.jsonl` (UTC dates); the daemon does not need to be running. These records include `mode` and contain approval-service and backend output, not the subsequent tool execution's stdout/stderr. Logs are not automatically rotated or cleaned up.
 
 New approval summaries include the command and working directory when supplied in
 `CommandLine` and `Cwd`, and display the pipeline stage. `reviewer_error` indicates
@@ -134,11 +134,57 @@ search PATH, and CLI fallback directory. Process errors include the operation an
 failure stage; session persistence errors identify the affected path. Logs do not
 dump the full process environment.
 
-To inspect records in a different directory, including the legacy location:
+Only dated logs are read. Legacy `approvals.jsonl` files are not read or migrated.
+`logs --follow` discovers new daily files and drains remaining events from earlier files.
+
+To inspect records in a different directory:
 
 ```bash
 AGY_AUTO_APPROVE_LOG_DIR="$HOME/.gemini/antigravity-cli" agy-auto-approve logs
 ```
+
+## Approval statistics
+
+```bash
+agy-auto-approve stats                 # All backend modes
+agy-auto-approve stats --mode cli      # CLI only
+agy-auto-approve stats --mode sidecar  # Desktop sidecar only
+```
+
+Output is a single English table with rows for **Last 24 hours**, **Last 7 days**,
+and **Last 30 days**. Columns show Approvals, Input Tokens, Output Tokens, Total
+Time, Avg Input, Avg Output, and Avg Time. Windows are inclusive at the start
+and end and relative to one UTC timestamp captured when the query begins.
+
+Only completed model reviews (`stage=reviewer`) count, including allow, deny,
+ask, and force_ask decisions. Whitelist, blacklist, circuit-breaker, and failed
+reviews are excluded. An approval's completion timestamp determines its window.
+Time is the hook's measured duration, including queueing, initialization and
+retries; concurrent approvals contribute their own durations independently.
+
+Tokens include all backend calls associated with a counted approval, including
+session initialization and retries. CLI cumulative input/output counters are
+converted to per-call `usage_delta` in response events. The previous counters
+and round number are atomically persisted alongside the reviewer conversation
+ID in `reviewer_session.json`, so restarts preserve the baseline. Missing
+baselines, skipped/duplicate rounds, counter resets, unsuccessful backend calls,
+and unsupported usage formats are unknown, never zero. Sidecar usage is currently
+unknown. Cache and thinking counters are not separately added to input/output.
+
+If any counted approval has incomplete token data, that window's token totals
+and averages display `N/A`; time and counts remain available. Missing durations
+likewise display `N/A` for time. Empty windows show zero totals and `—` averages.
+Token averages are rounded to the nearest integer; average time is shown to
+one decimal second. Failed requests' costs remain in logs but are excluded from
+this table, even when they consumed tokens.
+
+Statistics use a 64 KiB buffered, line-by-line scan of dated files covering the
+last 30 days plus the preceding day for boundary-crossing requests. File lengths
+are snapshotted before scanning; readers do not hold locks while scanning. No
+database, statistics cache, daemon, or full-log load is required. Malformed and
+incomplete lines are skipped. The command never reads the legacy undated log,
+and does not rotate or delete historical files. Memory holds only per-request
+counters and completion metadata for the scanned dates.
 
 ## Hook
 

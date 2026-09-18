@@ -7,4 +7,6 @@ pub mod pipeline;
 pub mod register;
 pub mod reviewer;
 pub mod sessions;
+pub mod stats;
 pub mod upgrade;
+pub(crate) mod usage;

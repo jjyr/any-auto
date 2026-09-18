@@ -183,11 +183,18 @@ impl Bridge {
                     self.path.display()
                 )
             })?;
-            std::fs::write(
-                &self.path,
-                serde_json::to_vec(&json!({"conversationId": cid}))?,
-            )
-            .with_context(|| format!("Cannot save reviewer session to {}", self.path.display()))?;
+            let mut state: Value = std::fs::read(&self.path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+                .filter(Value::is_object)
+                .unwrap_or_else(|| json!({}));
+            if state["conversationId"] != cid {
+                state = json!({});
+            }
+            state["conversationId"] = cid.clone().into();
+            crate::usage::save(&self.path, &state).with_context(|| {
+                format!("Cannot save reviewer session to {}", self.path.display())
+            })?;
         }
         self.conversation_id = Some(cid.clone());
         Ok(cid)
