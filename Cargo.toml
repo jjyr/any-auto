@@ -1,6 +1,6 @@
 [package]
 name = "agy-auto-approve"
-version = "0.4.4"
+version = "0.4.5"
 edition = "2024"
 description = "Antigravity auto-approval hook and persistent reviewer daemon"
 license = "MIT"
