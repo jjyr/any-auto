@@ -57,7 +57,7 @@ Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
 `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl`.
 Make sure `~/.local/bin` is on your `PATH`.
 
-Or install from crates.io once the crate is published (requires Rust/Cargo and a C compiler):
+Or install from crates.io (requires Rust/Cargo and a C compiler):
 
 ```bash
 cargo install agy-auto-approve --locked
@@ -134,6 +134,11 @@ agy-auto-approve stats
 │ Last 30 days  │         3 │        8,700 │           920 │       4.2s │     2,900 │        307 │     1.4s │
 └───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
 ```
+
+## Releasing
+
+See the [release guide](docs/releasing.md) for crates.io trusted publishing setup
+and the tag-based CI release process.
 
 ## License
 
