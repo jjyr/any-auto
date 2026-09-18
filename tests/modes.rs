@@ -276,3 +276,97 @@ fn ipc_rejects_mode_mismatch() {
     assert_eq!(response["assessment"]["outcome"], "deny");
     assert!(!h.dir.path().join("agy-calls").exists());
 }
+
+#[test]
+fn stats_tracks_initialization_resume_and_persisted_baseline_after_restart() {
+    let h = Host::new();
+    h.mock("agy", r#"
+resume=no
+while [ "$#" -gt 0 ]; do
+ if [ "$1" = --conversation ]; then resume=yes; fi
+ shift
+done
+if [ "$resume" = no ]; then turn=1; else read -r turn < "$HOME/turn"; turn=$((turn + 1)); fi
+printf '%s\n' "$turn" > "$HOME/turn"
+printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"usage":{"input_tokens":%s,"output_tokens":%s},"response":"%s"}\n' "$turn" "$((turn * 100))" "$((turn * 10))" '{\"outcome\":\"allow\"}'
+"#);
+    assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
+    assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
+    h.run(&["daemon", "stop", "--mode", "cli"]);
+    assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
+    let out = h
+        .command()
+        .args(["stats", "--mode", "cli"])
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(out.stderr.is_empty());
+    let table = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(table.lines().count(), 7);
+    for line in table.lines().filter(|line| line.contains("Last ")) {
+        let cells: Vec<_> = line
+            .split('│')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(&cells[1..4], &["3", "400", "40"]);
+        assert_eq!(&cells[5..7], &["133", "13"]);
+    }
+    let path = agy_auto_approve::audit::daily_path(
+        &h.dir.path().join("logs"),
+        chrono::Utc::now().date_naive(),
+    );
+    assert!(!h.dir.path().join("logs/approvals.jsonl").exists());
+    let events: Vec<Value> = fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let total_ms: u64 = events
+        .iter()
+        .filter(|event| event["event"] == "hook_result" && event["data"]["stage"] == "reviewer")
+        .map(|event| event["data"]["duration_ms"].as_u64().unwrap())
+        .sum();
+    let expected_average = format!("{:.1}s", total_ms as f64 / 3.0 / 1000.0);
+    for line in table.lines().filter(|line| line.contains("Last ")) {
+        let cells: Vec<_> = line
+            .split('│')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(cells[7], expected_average);
+    }
+    let responses: Vec<_> = events
+        .iter()
+        .filter(|event| event["event"] == "agy_response")
+        .collect();
+    assert_eq!(responses.len(), 4);
+    for response in responses {
+        assert_eq!(
+            response["data"]["usage_delta"],
+            json!({"input_tokens":100,"output_tokens":10})
+        );
+    }
+    assert_eq!(h.hook(Some("sidecar"), false)["decision"], "allow");
+    let all = h.command().arg("stats").output().unwrap();
+    let all = String::from_utf8(all.stdout).unwrap();
+    assert!(all.contains("N/A"));
+    for line in all.lines().filter(|line| line.contains("Last ")) {
+        let cells: Vec<_> = line
+            .split('│')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert_eq!(cells[1], "4");
+    }
+    let cli = h
+        .command()
+        .args(["stats", "--mode", "cli"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8(cli.stdout).unwrap().contains("N/A"));
+}

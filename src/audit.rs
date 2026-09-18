@@ -4,10 +4,11 @@ use anyhow::{Context, Result, bail};
 use fs2::FileExt;
 use serde_json::{Value, json};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeMap, VecDeque},
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -32,15 +33,16 @@ pub fn record(id: &str, event: &str, data: Value) {
 fn append(id: &str, event: &str, data: Value) -> Result<()> {
     let dir = config::log_dir();
     fs::create_dir_all(&dir)?;
+    let now = chrono::Utc::now();
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .mode(0o600)
-        .open(dir.join("approvals.jsonl"))?;
+        .open(daily_path(&dir, now.date_naive()))?;
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     // One line per event, even when multiple hook processes and the daemon write together.
     file.lock_exclusive()?;
-    let entry = json!({"schema_version":1, "id":id, "timestamp":chrono::Utc::now().to_rfc3339(),
+    let entry = json!({"schema_version":2, "id":id, "timestamp":now.to_rfc3339(),
         "mode":config::mode(), "event":event, "data":data});
     writeln!(file, "{entry}")?;
     Ok(())
@@ -52,30 +54,82 @@ pub struct Filter {
     pub tool: Option<String>,
     pub conversation: Option<String>,
 }
-fn events(mut visit: impl FnMut(Value)) -> Result<()> {
-    let path = config::log_dir().join("approvals.jsonl");
-    let file = match File::open(&path) {
-        Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).with_context(|| format!("Cannot read {}", path.display())),
+pub fn daily_path(dir: &Path, date: chrono::NaiveDate) -> PathBuf {
+    dir.join(format!("approvals-{date}.jsonl"))
+}
+
+/// Only the new dated format is supported; legacy and unrelated files are ignored.
+pub(crate) fn paths(dir: &Path) -> Result<Vec<(chrono::NaiveDate, PathBuf)>> {
+    let entries = match fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
     };
-    // Snapshot the committed byte length, then release the lock before scanning.
-    // Browsing a large history must not hold up active approval writers.
-    FileExt::lock_shared(&file)?;
-    let length = file.metadata()?.len();
-    FileExt::unlock(&file)?;
-    let mut reader = BufReader::new(file.take(length));
-    let mut line = String::new();
-    loop {
-        line.clear();
-        if reader.read_line(&mut line)? == 0 {
-            break;
+    let mut paths = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(date) = name
+            .strip_prefix("approvals-")
+            .and_then(|s| s.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        if let Ok(date) = chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+            && daily_path(dir, date) == entry.path()
+            && entry.file_type()?.is_file()
+        {
+            paths.push((date, entry.path()));
         }
-        if let Ok(value) = serde_json::from_str::<Value>(&line) {
-            visit(value);
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+/// Snapshot all lengths before reading, releasing locks before the potentially long scan.
+pub(crate) fn scan(
+    paths: impl IntoIterator<Item = PathBuf>,
+    mut visit: impl FnMut(Value),
+) -> Result<()> {
+    let mut snapshots = Vec::new();
+    for path in paths {
+        let file = File::open(&path).with_context(|| format!("Cannot read {}", path.display()))?;
+        FileExt::lock_shared(&file)?;
+        let metadata = file.metadata()?;
+        FileExt::unlock(&file)?;
+        snapshots.push((path, metadata.len(), (metadata.dev(), metadata.ino())));
+    }
+    for (path, length, identity) in snapshots {
+        let file = File::open(&path)?;
+        let metadata = file.metadata()?;
+        anyhow::ensure!(
+            (metadata.dev(), metadata.ino()) == identity && metadata.len() >= length,
+            "Log changed during scan; retry the command: {}",
+            path.display()
+        );
+        let mut reader = BufReader::with_capacity(64 * 1024, file.take(length));
+        let mut line = Vec::new();
+        loop {
+            line.clear();
+            if reader.read_until(b'\n', &mut line)? == 0 {
+                break;
+            }
+            // An interrupted writer may have left an incomplete final record.
+            if line.last() == Some(&b'\n')
+                && let Ok(value) = serde_json::from_slice::<Value>(&line)
+            {
+                visit(value);
+            }
         }
     }
     Ok(())
+}
+fn events(visit: impl FnMut(Value)) -> Result<()> {
+    scan(
+        paths(&config::log_dir())?.into_iter().map(|(_, p)| p),
+        visit,
+    )
 }
 pub fn list(filter: &Filter) -> Result<Vec<Value>> {
     let mut records = VecDeque::new();
@@ -181,8 +235,7 @@ struct Tail {
     pending: Vec<u8>,
 }
 impl Tail {
-    fn poll(&mut self, mut visit: impl FnMut(Value)) -> Result<()> {
-        let path = config::log_dir().join("approvals.jsonl");
+    fn poll(&mut self, path: &Path, mut visit: impl FnMut(Value)) -> Result<()> {
         let mut file = match File::open(path) {
             Ok(file) => file,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -215,10 +268,24 @@ impl Tail {
         Ok(())
     }
 }
+#[derive(Default)]
+struct DailyTail(BTreeMap<PathBuf, Tail>);
+impl DailyTail {
+    fn poll(&mut self, dir: &Path, mut visit: impl FnMut(Value)) -> Result<()> {
+        for (_, path) in paths(dir)? {
+            self.0
+                .entry(path.clone())
+                .or_default()
+                .poll(&path, &mut visit)?;
+        }
+        Ok(())
+    }
+}
+
 pub async fn follow(filter: &Filter, json_output: bool) -> Result<()> {
-    let mut tail = Tail::default();
+    let mut tail = DailyTail::default();
     let mut recent = VecDeque::new();
-    tail.poll(|entry| {
+    tail.poll(&config::log_dir(), |entry| {
         if let Some(record) = summary(&entry, filter) {
             recent.push_back(record);
             if recent.len() > filter.limit {
@@ -236,11 +303,36 @@ pub async fn follow(filter: &Filter, json_output: bool) -> Result<()> {
         tokio::select! {
             signal = tokio::signal::ctrl_c() => { signal?; return Ok(()); }
             _ = interval.tick() => {
-                tail.poll(|entry| {
+                tail.poll(&config::log_dir(), |entry| {
                     if let Some(record) = summary(&entry, filter) { print_record(&record, json_output); }
                 })?;
                 std::io::stdout().flush()?;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn daily_tail_discovers_new_day_and_drains_previous_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let first = daily_path(dir.path(), "2026-09-17".parse().unwrap());
+        let second = daily_path(dir.path(), "2026-09-18".parse().unwrap());
+        fs::write(&first, "{\"id\":1}\n{\"id\":").unwrap();
+        let mut tail = DailyTail::default();
+        let mut ids = Vec::new();
+        tail.poll(dir.path(), |v| ids.push(v["id"].as_u64().unwrap()))
+            .unwrap();
+        assert_eq!(ids, vec![1]);
+        fs::write(&second, "{\"id\":3}\n").unwrap();
+        writeln!(OpenOptions::new().append(true).open(first).unwrap(), "2}}").unwrap();
+        tail.poll(dir.path(), |v| ids.push(v["id"].as_u64().unwrap()))
+            .unwrap();
+        assert_eq!(ids, vec![1, 2, 3]);
+        tail.poll(dir.path(), |v| ids.push(v["id"].as_u64().unwrap()))
+            .unwrap();
+        assert_eq!(ids, vec![1, 2, 3]);
     }
 }

@@ -83,7 +83,11 @@ agy-auto-approve daemon status --mode sidecar   # Inspect Desktop daemon
 Settings are global, with environment variable overrides. See the
 [configuration reference](docs/configuration.md) for model tiers and configuration precedence.
 
-## Logs
+## Commands
+
+For all commands and options, see the [command reference](docs/commands.md). For more details, see the [approval architecture](docs/auto_approver_architecture.md) and [sidecar documentation](docs/sidecars.md).
+
+### Logs
 
 ```bash
 agy-auto-approve logs                     # Show recent approvals
@@ -94,7 +98,42 @@ agy-auto-approve logs show APPROVAL_ID    # Show the full approval record
 
 Logs are stored in `~/.gemini/agy-auto-approve` and can be read without a running daemon.
 
-For all commands and options, see the [command reference](docs/commands.md). For more details, see the [approval architecture](docs/auto_approver_architecture.md) and [sidecar documentation](docs/sidecars.md).
+Example output (`agy-auto-approve logs --limit 2`, illustrative data):
+
+```text
+2026-09-18T04:22:07.302579+00:00  18c4a1-12ab-0  allow      run_command  stage=reviewer mode=cli
+  [agy-auto-approve: ALLOWED] Requested local validation is low risk.
+  command: cargo test
+  cwd: /workspace/my-project
+2026-09-15T04:22:07.302579+00:00  18c3b2-12ab-0  allow      run_command  stage=reviewer mode=cli
+  [agy-auto-approve: ALLOWED] Requested local validation is low risk.
+  command: cargo build --release
+  cwd: /workspace/my-project
+```
+
+### Approval statistics
+
+Run `agy-auto-approve stats` for a table of input/output tokens and approval time
+(totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--mode cli`
+or `--mode sidecar` to filter. Statistics read daily UTC audit logs directly;
+there is no database. Unknown token usage displays `N/A`. Only completed model
+reviews count; see [statistics details](docs/commands.md#approval-statistics).
+
+Example output (illustrative data):
+
+```bash
+agy-auto-approve stats
+```
+
+```text
+┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
+│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
+├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
+│ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
+│ Last 7 days   │         2 │        5,600 │           620 │       2.4s │     2,800 │        310 │     1.2s │
+│ Last 30 days  │         3 │        8,700 │           920 │       4.2s │     2,900 │        307 │     1.4s │
+└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
+```
 
 ## License
 
