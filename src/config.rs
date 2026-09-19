@@ -447,6 +447,37 @@ fn resolve_config(
     })
 }
 
+fn print_approver(
+    agent: &str,
+    approver: &ApproverConfig,
+    sources: &std::collections::BTreeMap<String, String>,
+) {
+    println!("\n{agent}");
+    let row = |label: &str, key: &str, value: &str| {
+        let source = sources.get(key).map(String::as_str).unwrap_or("default");
+        if source == "default" {
+            println!("  {label:<10}{value}");
+        } else {
+            println!("  {label:<10}{value}  (from {source})");
+        }
+    };
+    row("Approver", "provider", approver.provider.as_str());
+    row(
+        "Model",
+        "model",
+        approver.model.as_deref().unwrap_or("default"),
+    );
+    row(
+        "Effort",
+        "effort",
+        approver.effort.as_deref().unwrap_or("default"),
+    );
+    if approver.provider == Provider::Openai {
+        row("Base URL", "base_url", &approver.base_url);
+        row("API key", "api_key_env", &approver.api_key_env);
+    }
+}
+
 pub fn show(json: bool) -> anyhow::Result<()> {
     let config = reviewer_config()?;
     if json {
@@ -459,25 +490,15 @@ pub fn show(json: bool) -> anyhow::Result<()> {
         );
     } else {
         println!("Config: {}", config_path().display());
+        print_approver(mode().agent(), &config.approver, &config.approver_sources);
+        println!("\n  Instance  {}", instance());
         println!(
-            "Model: {} ({})",
-            config.model.as_deref().unwrap_or("agent default"),
-            config.model_source
+            "  Prompt    {} ({} lines; use --json for full text)",
+            config.prompt_source,
+            config.prompt.lines().count()
         );
         println!(
-            "CLI model: {} ({})",
-            config.cli_model.as_deref().unwrap_or("agent default"),
-            config.cli_model_source
-        );
-        println!("Agent: {}", mode().agent());
-        println!("Approver: {}", serde_json::to_string(&config.approver)?);
-        println!(
-            "Sources: {}",
-            serde_json::to_string(&config.approver_sources)?
-        );
-        println!("Prompt ({}):\n{}", config.prompt_source, config.prompt);
-        println!(
-            "Socket: {}\nState: {}\nLogs: {}",
+            "  Socket    {}\n  State     {}\n  Logs      {}",
             socket_path().display(),
             state_dir().display(),
             log_dir().display()
@@ -558,12 +579,10 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
     }
     let agents: Vec<_> = [Mode::Cli, Mode::Sidecar, Mode::Pi]
         .into_iter()
-        .map(|agent| {
-            reviewer_config_for(agent)
-                .map(|c| serde_json::json!({"agent":agent.agent(), "approver":c.approver, "sources":c.approver_sources}))
-        })
+        .map(|agent| reviewer_config_for(agent).map(|c| (agent, c)))
         .collect::<anyhow::Result<_>>()?;
     if json {
+        let agents: Vec<_> = agents.iter().map(|(agent, c)| serde_json::json!({"agent":agent.agent(), "approver":c.approver, "sources":c.approver_sources})).collect();
         println!(
             "{}",
             serde_json::to_string_pretty(
@@ -572,14 +591,10 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
         );
     } else {
         println!("Config: {}", config_path().display());
-        for agent in agents {
-            println!(
-                "{}: {}",
-                agent["agent"].as_str().unwrap(),
-                agent["approver"]
-            );
-            println!("  sources: {}", agent["sources"]);
+        for (agent, config) in agents {
+            print_approver(agent.agent(), &config.approver, &config.approver_sources);
         }
+        println!("\nEdit: any-auto config --edit");
         println!("Precedence: defaults < [approver] < [agents.NAME.approver] < environment");
     }
     Ok(())
