@@ -205,9 +205,9 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
 #[test]
 fn cli_model_and_prompt_are_passed_as_single_arguments() {
     let h = Host::new();
-    let config = h.dir.path().join(".gemini/config");
+    let config = h.dir.path().join(".config/agy-auto-approve");
     fs::create_dir_all(&config).unwrap();
-    fs::write(config.join("agy-auto-approve.toml"), "model = 'pro'\ncli_model = 'gemini-3.8-flash-high'\nprompt = 'custom $(do-not-execute) prompt'\n").unwrap();
+    fs::write(config.join("config.toml"), "model = 'pro'\ncli_model = 'gemini-3.8-flash-high'\nprompt = 'custom $(do-not-execute) prompt'\n").unwrap();
     assert_eq!(h.hook(None, false)["decision"], "allow");
     let args = fs::read_to_string(h.dir.path().join("agy-args")).unwrap();
     assert!(args.contains("custom $(do-not-execute) prompt"));
@@ -302,7 +302,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     );
     assert!(out.stderr.is_empty());
     let table = String::from_utf8(out.stdout).unwrap();
-    assert_eq!(table.lines().count(), 7);
+    assert!(table.contains("Outcomes (human confirmations"));
     for line in table.lines().filter(|line| line.contains("Last ")) {
         let cells: Vec<_> = line
             .split('│')

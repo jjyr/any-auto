@@ -365,9 +365,9 @@ fn prompt_precedence_and_script_inspection() {
         (true, true, "environment"),
     ] {
         let s = Sandbox::new();
-        let global = s.dir.path().join(".gemini/config");
+        let global = s.dir.path().join(".config/agy-auto-approve");
         fs::create_dir_all(&global).unwrap();
-        fs::write(global.join("agy-auto-approve.toml"), "prompt = 'global'").unwrap();
+        fs::write(global.join("config.toml"), "prompt = 'global'").unwrap();
         if workspace {
             fs::create_dir_all(s.dir.path().join(".agents")).unwrap();
             fs::write(
@@ -851,7 +851,7 @@ fn global_config_edit_and_precedence() {
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(value["reviewer"]["model"].is_null());
-    assert!(!s.dir.path().join(".gemini/config").exists());
+    assert!(!s.dir.path().join(".config/agy-auto-approve").exists());
     let editor = s.dir.path().join("editor with spaces");
     fs::write(&editor, "#!/bin/sh\n[ \"$1\" = --wait ] || exit 5\nprintf 'model = \"pro\"\nprompt = \"custom prompt\"\n' > \"$2\"\n").unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
@@ -889,7 +889,7 @@ fn global_config_edit_and_precedence() {
             .success()
     );
     fs::write(
-        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        s.dir.path().join(".config/agy-auto-approve/config.toml"),
         "model = 'unsupported'",
     )
     .unwrap();
@@ -929,9 +929,9 @@ esac
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let before = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert!(!before.contains("--model="));
-    fs::create_dir_all(s.dir.path().join(".gemini/config")).unwrap();
+    fs::create_dir_all(s.dir.path().join(".config/agy-auto-approve")).unwrap();
     fs::write(
-        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        s.dir.path().join(".config/agy-auto-approve/config.toml"),
         "model = 'pro'\nprompt = 'new prompt'\n",
     )
     .unwrap();
@@ -955,7 +955,7 @@ esac
         "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
     );
     fs::write(
-        s.dir.path().join(".gemini/config/agy-auto-approve.toml"),
+        s.dir.path().join(".config/agy-auto-approve/config.toml"),
         "model = 'bad'\n",
     )
     .unwrap();
@@ -970,7 +970,7 @@ esac
 #[test]
 fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
     let s = Sandbox::new();
-    let global = s.dir.path().join(".gemini/config");
+    let global = s.dir.path().join(".config/agy-auto-approve");
     fs::create_dir_all(&global).unwrap();
     fs::write(global.join("agy-auto-approve-prompt.txt"), "legacy prompt").unwrap();
     fs::write(global.join("agy-auto-approve-model.txt"), "legacy model").unwrap();
@@ -991,10 +991,7 @@ fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
         .unwrap();
     assert!(out.status.success());
     let file: toml::Value =
-        toml::from_str(&fs::read_to_string(global.join("agy-auto-approve.toml")).unwrap()).unwrap();
-    assert_eq!(file["model"].as_str(), Some(""));
-    assert_eq!(
-        file["prompt"].as_str(),
-        Some(include_str!("../src/prompt.txt"))
-    );
+        toml::from_str(&fs::read_to_string(global.join("config.toml")).unwrap()).unwrap();
+    assert!(file.get("model").is_none());
+    assert!(file.get("prompt").is_none());
 }

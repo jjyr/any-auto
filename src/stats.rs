@@ -4,6 +4,89 @@ use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
 use std::collections::HashMap;
+fn print_outcomes(
+    mode: Option<config::Mode>,
+    provider: Option<&str>,
+    instance: Option<&str>,
+    group: Option<audit::Group>,
+) -> Result<()> {
+    let now = Utc::now();
+    let mut counts: std::collections::BTreeMap<(String, String), [u64; 3]> = Default::default();
+    let first = (now - Duration::days(31)).date_naive();
+    let paths = audit::paths(&config::log_dir())?
+        .into_iter()
+        .filter(|(date, _)| *date >= first && *date <= now.date_naive())
+        .map(|(_, path)| path);
+    audit::scan(paths, |event| {
+        if mode.is_some_and(|m| event["host"] != m.host())
+            || provider.is_some_and(|p| event["provider"] != p)
+            || instance.is_some_and(|i| event["instance"] != i)
+        {
+            return;
+        }
+        let Some(at) = event["timestamp"]
+            .as_str()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        else {
+            return;
+        };
+        let age = now.signed_duration_since(at);
+        if age < Duration::zero() || age >= Duration::days(30) {
+            return;
+        }
+        let d = &event["data"];
+        let outcome = match event["event"].as_str() {
+            Some("human_result") => {
+                if d["allowed"] == true {
+                    "human_allow".to_owned()
+                } else {
+                    "human_deny".to_owned()
+                }
+            }
+            Some("hook_result") => format!(
+                "{}:{}",
+                d["stage"].as_str().unwrap_or("unknown"),
+                d["output"]["decision"].as_str().unwrap_or("unknown")
+            ),
+            _ => return,
+        };
+        let label = match group {
+            None => "Total",
+            Some(audit::Group::Session) => {
+                d["conversation_id"].as_str().unwrap_or("default/unknown")
+            }
+            Some(g) => event[g.key()].as_str().unwrap_or("default/unknown"),
+        }
+        .to_owned();
+        let mut labels = vec![label];
+        if group.is_some() && labels[0] != "Total" {
+            labels.push("Total".into());
+        }
+        for label in labels {
+            let values = counts.entry((label, outcome.clone())).or_default();
+            for (i, days) in [1, 7, 30].iter().enumerate() {
+                if age < Duration::days(*days) {
+                    values[i] += 1;
+                }
+            }
+        }
+    })?;
+    println!("Outcomes (human confirmations are separate events, not additional reviews)");
+    println!("Group | Outcome | 24h | 7d | 30d");
+    for ((label, outcome), values) in counts {
+        println!(
+            "{} | {} | {} | {} | {}",
+            audit::safe_text(&label),
+            audit::safe_text(&outcome),
+            values[0],
+            values[1],
+            values[2]
+        );
+    }
+    println!("Usage above covers completed model reviews, not total provider billing.");
+    Ok(())
+}
+
 #[cfg(test)]
 use std::path::Path;
 
@@ -335,6 +418,7 @@ pub fn print(
         println!("Total");
     }
     print!("{}", table(&collector.totals()));
+    print_outcomes(mode, provider, instance, group)?;
     Ok(())
 }
 

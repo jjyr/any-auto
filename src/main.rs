@@ -1,4 +1,4 @@
-use agy_auto_approve::{audit, config, daemon, install, pipeline, stats, upgrade};
+use agy_auto_approve::{audit, config, daemon, install, pipeline, stats, ui, upgrade};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -11,13 +11,13 @@ use std::io::Read;
 )]
 struct Cli {
     /// Host routing/filter. Hooks auto-detect; logs/stats include all hosts unless filtered.
-    #[arg(long, visible_alias = "host", global = true, value_enum)]
+    #[arg(long = "host", visible_alias = "mode", global = true, value_enum)]
     mode: Option<config::Mode>,
     /// Isolate a daemon instance, or filter logs/stats to that instance.
     #[arg(long, global = true)]
     instance: Option<String>,
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 #[derive(Subcommand)]
 enum Commands {
@@ -25,6 +25,8 @@ enum Commands {
     Hook,
     /// Record a Pi user confirmation (internal extension protocol).
     HumanResult,
+    /// Check host detection and local reviewer readiness without model requests.
+    Doctor,
     /// Show rolling model approval usage, grouped by host plus totals by default.
     Stats {
         #[arg(long, value_enum, default_value = "host")]
@@ -116,13 +118,21 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "default".into()),
     )?;
     config::set_mode(cli.mode.unwrap_or_else(|| {
-        if matches!(cli.command, Commands::Hook) {
+        if matches!(cli.command, Some(Commands::Hook)) {
             config::Mode::for_hook()
         } else {
             config::Mode::Cli
         }
     }));
-    match cli.command {
+    let Some(command) = cli.command else {
+        anyhow::ensure!(
+            std::env::args_os().count() == 1,
+            "Choose a subcommand; see --help"
+        );
+        return ui::run();
+    };
+    match command {
+        Commands::Doctor => install::doctor()?,
         Commands::HumanResult => {
             let mut bytes = Vec::new();
             std::io::stdin().take(65537).read_to_end(&mut bytes)?;
@@ -228,7 +238,7 @@ async fn main() -> Result<()> {
             if edit {
                 config::edit()?;
             } else {
-                config::show(json)?;
+                config::overview(json, selected_mode)?;
             }
         }
         Commands::Update { version } => upgrade::update(version.as_deref()).await?,

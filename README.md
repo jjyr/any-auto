@@ -6,9 +6,15 @@ reviewers. Defaults need no configuration: agy uses its existing backend and Pi
 uses a separate, tool-disabled Pi RPC session. Each host has independent daemons
 and sessions; logs and statistics can be grouped across them.
 
-Reviewer subprocesses preserve the host's `PATH` and append
-`$HOME/.gemini/antigravity-cli/bin` as a fallback for CLI launches. Host-injected
-commands take priority. This lookup works on both macOS and Linux.
+| Host | Default approver backend |
+| --- | --- |
+| Antigravity CLI | `cli` (agy CLI) |
+| Antigravity Desktop | `agentapi` |
+| Pi | `pi` (persistent RPC) |
+
+The host is where approval requests originate. The approver backend decides them;
+it can differ from the host. Pi's model provider (such as Anthropic) is a separate
+choice encoded in the model ID.
 
 ## How it works
 
@@ -49,7 +55,7 @@ Download a [GitHub Release](https://github.com/jjyr/agy-auto-approve/releases/la
 (macOS or Linux, ARM64 or x86_64). Set the release tag and your platform target:
 
 ```bash
-VERSION=v0.4.2
+VERSION=v0.4.5
 TARGET=aarch64-apple-darwin
 curl -fLO "https://github.com/jjyr/agy-auto-approve/releases/download/$VERSION/agy-auto-approve-$VERSION-$TARGET.tar.gz"
 tar -xzf "agy-auto-approve-$VERSION-$TARGET.tar.gz"
@@ -85,6 +91,13 @@ agy-auto-approve install --pi
 See the [Pi extension/RPC research](docs/pi-research.md),
 [configuration](docs/configuration.md), and [command reference](docs/commands.md).
 
+## Terminal menu
+
+Run `agy-auto-approve` without arguments to open host readiness, installation,
+configuration, logs and statistics. Explicit subcommands stay noninteractive,
+except bare `install`, which opens its installation wizard.
+Run `agy-auto-approve doctor` for local readiness checks without model requests.
+
 ## Configuration
 
 ```bash
@@ -97,9 +110,22 @@ agy-auto-approve daemon status --all            # Inspect all daemon instances
 Settings support common defaults, per-host overrides, and environment overrides. See the
 [configuration reference](docs/configuration.md) for provider, model, effort, and configuration precedence.
 
+Default configuration: `~/.config/agy-auto-approve/config.toml`. No file is needed.
+Use a common override or select a host:
+
+```toml
+[hosts.pi.approver]
+provider = "pi"
+model = "anthropic/claude-sonnet-4-5" # Example; must be available in your account
+effort = "low"
+```
+
+`config` shows all hosts and setting sources. Legacy configuration is not read.
+Logs/stats and sessions start fresh; see [configuration and directory details](docs/configuration.md#overview-tui-and-directories).
+
 ## Commands
 
-For all commands and options, see the [command reference](docs/commands.md). For more details, see the [Codex Guardian background research](docs/auto_approver_architecture.md) and [sidecar documentation](docs/sidecars.md).
+For all commands and options, see the [command reference](docs/commands.md). For more details, see the [multi-host architecture](docs/architecture.md) and [sidecar documentation](docs/sidecars.md).
 
 ### Logs
 
@@ -111,7 +137,7 @@ agy-auto-approve logs --decision deny     # Show denied approvals
 agy-auto-approve logs show APPROVAL_ID    # Show the full approval record
 ```
 
-Logs are stored in `~/.gemini/agy-auto-approve` and can be read without a running daemon.
+Logs are stored in `~/.local/share/agy-auto-approve/logs` and can be read without a running daemon.
 
 Example output (`agy-auto-approve logs --limit 2`, illustrative data):
 
@@ -132,8 +158,8 @@ host: agy-cli
 Run `agy-auto-approve stats` for tables grouped by host plus a total of input/output tokens and approval time
 (totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--host pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
-there is no database. Unknown token usage displays `N/A`. Only completed model
-reviews count; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
+there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
+reviews. A separate outcomes table includes rules, errors and human confirmations; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
 Example output (illustrative data):
 

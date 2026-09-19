@@ -91,9 +91,9 @@ done
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn config(&self, text: &str) {
-        let p = self.root.path().join(".gemini/config");
+        let p = self.root.path().join(".config/agy-auto-approve");
         fs::create_dir_all(&p).unwrap();
-        fs::write(p.join("agy-auto-approve.toml"), text).unwrap();
+        fs::write(p.join("config.toml"), text).unwrap();
     }
 }
 impl Drop for Host {
@@ -169,7 +169,12 @@ fn host_override_resets_foreign_model_and_install_only_touches_pi() {
     )
     .unwrap();
     assert!(ext.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
-    assert!(!h.root.path().join(".gemini/config/hooks.json").exists());
+    assert!(
+        !h.root
+            .path()
+            .join(".config/agy-auto-approve/hooks.json")
+            .exists()
+    );
 }
 
 #[test]

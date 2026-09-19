@@ -2,7 +2,7 @@
 name = "agy-auto-approve"
 version = "0.4.5"
 edition = "2024"
-description = "Antigravity auto-approval hook and persistent reviewer daemon"
+description = "Multi-host approval hooks and persistent reviewers for Antigravity and Pi"
 license = "MIT"
 repository = "https://github.com/jjyr/agy-auto-approve"
 
@@ -30,3 +30,4 @@ tar = "0.4"
 toml = "0.8"
 
 dialoguer = { version = "0.11", default-features = false }
+toml_edit = "0.22"

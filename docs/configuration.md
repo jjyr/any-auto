@@ -1,6 +1,6 @@
 # Configuration
 
-The optional global file is `~/.gemini/config/agy-auto-approve.toml`. No file is
+The optional global file is `~/.config/agy-auto-approve/config.toml`. No file is
 needed for the defaults. Unknown fields, malformed TOML, invalid providers and
 unsupported effort values are errors. Configuration is not read from projects.
 
@@ -116,7 +116,9 @@ resolved by the invoking process, not a running daemon's environment.
 
 ## Paths and environment
 
-Existing application paths are retained; Pi users do not need agy installed.
+Application configuration and data are independent of host installation directories.
+`XDG_CONFIG_HOME` and `XDG_DATA_HOME` override the defaults when absolute.
+Pi users do not need agy installed.
 
 | Variable | Purpose |
 | --- | --- |
@@ -126,9 +128,9 @@ Existing application paths are retained; Pi users do not need agy installed.
 | `AGY_AUTO_APPROVE_EFFORT` | Backend-specific effort |
 | `AGY_AUTO_APPROVE_MODEL`, `AGY_AUTO_APPROVE_CLI_MODEL` | Legacy agentapi tier / agy model |
 | `AGY_AUTO_APPROVE_PROMPT` | Policy replacement |
-| `AGY_APPROVER_SOCKET` | Socket base, default `~/.gemini/antigravity-cli/approver.sock` |
-| `AGY_APPROVER_STATE_DIR` | State base, default `~/.gemini/antigravity-cli/state` |
-| `AGY_AUTO_APPROVE_LOG_DIR` | Shared daily logs, default `~/.gemini/agy-auto-approve` |
+| `AGY_APPROVER_SOCKET` | Socket base, default `~/.local/share/agy-auto-approve/runtime/approver.sock` |
+| `AGY_APPROVER_STATE_DIR` | State base, default `~/.local/share/agy-auto-approve/hosts` |
+| `AGY_AUTO_APPROVE_LOG_DIR` | Shared daily logs, default `~/.local/share/agy-auto-approve/logs` |
 | `AGY_AUTO_APPROVE_SILENT` | Suppress hook stderr notices |
 | `PI_CODING_AGENT_DIR` | Pi configuration/authentication source and extension installation root |
 
@@ -139,3 +141,26 @@ instances in their launch/hook configuration; a single instance inherits one
 connection environment. Setting only the log-directory override places state
 under its `state/` subdirectory. The binary preserves inherited PATH and appends
 `~/.gemini/antigravity-cli/bin` for agy/agentapi lookup.
+
+## Overview, TUI and directories
+
+Bare `agy-auto-approve` opens the terminal menu. The configuration form can edit
+per-host approver backend, model and effort; installation uses the same form.
+Agentapi has no effort selector. Other model-specific capabilities are checked during
+review, not by sending paid requests in the form. Secrets remain in environment variables.
+Changes are previewed and saved only after confirmation. Unrelated TOML fields/comments
+are preserved. Switching a backend in the form replaces that host's approver settings.
+
+`config` displays all three hosts and setting sources; `config --host pi` selects one.
+`config --edit` opens the shared TOML file. A root invocation with options requires a
+subcommand and never enters the TUI.
+
+Legacy `.gemini` configuration is not read. Logs, statistics and reviewer sessions
+start fresh. Existing explicit path environment overrides still work.
+Before upgrading an active installation, stop its old daemons using the old binary:
+the new default paths do not discover processes listening on legacy sockets.
+
+Default state directories are `hosts/<host>/<instance>` under the application data root.
+Runtime sockets use `$XDG_RUNTIME_DIR/agy-auto-approve/runtime` when set to an absolute
+path, otherwise the application data directory's `runtime/` directory. Explicit socket
+and state overrides retain their existing host/instance suffix behavior.

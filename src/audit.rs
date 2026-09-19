@@ -178,16 +178,27 @@ fn events(visit: impl FnMut(Value)) -> Result<()> {
     )
 }
 pub fn list(filter: &Filter) -> Result<Vec<Value>> {
-    let mut records = VecDeque::new();
+    let mut groups: BTreeMap<String, VecDeque<Value>> = BTreeMap::new();
     events(|entry| {
         if let Some(record) = summary(&entry, filter) {
+            let key = if matches!(filter.group_by, Some(Group::Host)) {
+                record["host"].as_str().unwrap_or("unknown").to_owned()
+            } else {
+                String::new()
+            };
+            let records = groups.entry(key).or_default();
             records.push_back(record);
             if records.len() > filter.limit {
                 records.pop_front();
             }
         }
     })?;
-    Ok(records.into_iter().rev().collect())
+    let mut records: Vec<Value> = groups
+        .into_values()
+        .flat_map(|records| records.into_iter().rev())
+        .collect();
+    records.sort_by(|a, b| b["timestamp"].as_str().cmp(&a["timestamp"].as_str()));
+    Ok(records)
 }
 fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
     if entry["event"] != "hook_result" {

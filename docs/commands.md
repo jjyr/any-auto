@@ -20,8 +20,8 @@ extensions/settings are preserved. Run `/reload` in Pi afterwards. The three
 legacy installation selectors are mutually exclusive; use `--hosts` to select several hosts.
 Only bare `install` opens the TUI. Any arguments disable interaction.
 The wizard defaults to detected hosts, permits pre-installing undetected hosts,
-and asks before writing. Existing approver settings are preserved; use `config --edit`
-to configure provider, model and effort. Non-terminal bare calls fail with usage guidance. Update refreshes installed Pi integration as well as enabled agy
+and asks before writing. The wizard optionally configures provider, model and effort before the final confirmation.
+Noninteractive installation preserves existing approver settings. Non-terminal bare calls fail with usage guidance. Update refreshes installed Pi integration as well as enabled agy
 integrations and stops default host daemons. Nondefault instances need an explicit
 restart. See [releasing](releasing.md) for distribution details.
 
@@ -37,7 +37,7 @@ agy-auto-approve daemon run --host pi --idle-timeout 1800
 agy-auto-approve daemon status --host agy-desktop --instance desktop-two
 ```
 
-`--host` aliases `--mode`; cli/agy-cli, sidecar/agy-desktop, and pi are accepted.
+`--host` is the primary option; `--mode` remains an alias; cli/agy-cli, sidecar/agy-desktop, and pi are accepted.
 Hooks auto-detect Desktop's connection environment unless a host is specified.
 Other operational commands default to agy CLI. Pi extension always selects pi.
 Logs/stats cover all hosts unless filtered. `--instance` (or `AGY_AUTO_APPROVE_INSTANCE` for operations) defaults to default for
@@ -61,8 +61,8 @@ before review; environment changes require restarting the affected daemon.
 
 Logs answer **what happened to this action?** They default to groups by host,
 newest first within each group. `--no-group` provides one merged chronological
-list. Grouping rearranges the most recent matching records; limit
-applies before grouping. Grouping is not an aggregation of usage.
+list. `--limit` applies per host when grouping by host. For other grouping dimensions
+and `--no-group`, it applies globally before grouping. Grouping is not an aggregation of usage.
 
 ```bash
 agy-auto-approve logs                       # Groups by host
@@ -161,3 +161,23 @@ node --test tests/pi-extension.test.mjs  # Node >= 22.18
 
 Tests use isolated homes, fake executables and local API fixtures; no model login
 or paid request is needed. [Pi research](pi-research.md) documents the RPC contract.
+
+## Terminal menu and diagnostics
+
+```bash
+agy-auto-approve                  # Terminal menu: readiness/install/config/logs/stats
+agy-auto-approve doctor           # Read-only local detection; no model requests
+agy-auto-approve config           # Effective settings and sources for every host
+```
+
+Only the root invocation without arguments and bare `install` enter interactive mode.
+Other subcommands produce terminal text/JSON or perform their explicit action.
+Non-terminal interactive invocations fail with actionable guidance.
+`doctor` separates host detection, integration presence and local backend availability.
+It does not verify login, model access or Pi version compatibility.
+Daemon commands and lifecycle retain their existing behavior in this release.
+
+Stats also prints a separate outcomes table with the same rolling windows and filters.
+Rows distinguish pipeline stage/decision and human confirmations. Human confirmations
+are separate events, not extra model reviews. Model usage excludes failed reviews and
+must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.

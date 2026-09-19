@@ -27,6 +27,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "toml_edit",
  "tree-sitter",
  "tree-sitter-bash",
 ]
