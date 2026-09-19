@@ -1,13 +1,13 @@
 [package]
-name = "agy-auto-approve"
+name = "any-auto"
 version = "0.4.5"
 edition = "2024"
 description = "Multi-agent approval hooks and persistent reviewers for Antigravity and Pi"
 license = "MIT"
-repository = "https://github.com/jjyr/agy-auto-approve"
+repository = "https://github.com/jjyr/any-auto"
 
 [[bin]]
-name = "agy-auto-approve"
+name = "any-auto"
 path = "src/main.rs"
 
 [dependencies]

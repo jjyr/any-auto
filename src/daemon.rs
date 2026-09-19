@@ -81,9 +81,7 @@ pub async fn start() -> Result<Value> {
         let _ = child.try_wait()?;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    bail!(
-        "Failed to start daemon within timeout; run `agy-auto-approve daemon run` for diagnostics"
-    )
+    bail!("Failed to start daemon within timeout; run `any-auto daemon run` for diagnostics")
 }
 pub async fn stop() -> Result<()> {
     let path = config::socket_path();

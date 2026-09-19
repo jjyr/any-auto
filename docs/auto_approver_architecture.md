@@ -14,7 +14,7 @@ This document examines the **Auto Approve** mechanism in the `openai/codex` code
 6. [Policy templates and structured output](#6-policy-templates-and-structured-output)
 7. [Fault-tolerant parsing and fail-closed behavior](#7-fault-tolerant-parsing-and-fail-closed-behavior)
 8. [Repeated-denial circuit breaker](#8-repeated-denial-circuit-breaker)
-9. [Lessons for agy-auto-approve](#9-lessons-for-agy-auto-approve)
+9. [Lessons for any-auto](#9-lessons-for-any-auto)
 
 ---
 
@@ -547,9 +547,9 @@ pub enum GuardianRejectionCircuitBreakerAction {
 
 ---
 
-## 9. Lessons for agy-auto-approve
+## 9. Lessons for any-auto
 
-Codex's implementation offers useful guidance for the design and evolution of `agy-auto-approve`:
+Codex's implementation offers useful guidance for the design and evolution of `any-auto`:
 
 | Plugin limitation | Lesson from Codex Guardian | Suggested implementation |
 | :--- | :--- | :--- |

@@ -22,5 +22,5 @@ jobs:
       - run: python3 -m unittest discover -s tests -p 'test_bump_version.py'
       - run: cargo clippy --all-targets --locked -- -D warnings
       - run: cargo test --locked
-      - run: python3 tests/test_tui.py target/debug/agy-auto-approve
+      - run: python3 tests/test_tui.py target/debug/any-auto
       - run: cargo build --release --locked

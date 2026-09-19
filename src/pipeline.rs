@@ -146,10 +146,10 @@ pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<Strin
         "deny" => "DENIED",
         _ => "REVIEW REQUIRED",
     };
-    let reason = if reason.trim().starts_with("[agy-auto-approve") {
+    let reason = if reason.trim().starts_with("[any-auto") {
         reason.trim().into()
     } else {
-        format!("[agy-auto-approve: {tag}] {}", reason.trim())
+        format!("[any-auto: {tag}] {}", reason.trim())
     };
     let dir = config::log_dir();
     if fs::create_dir_all(&dir).is_ok()
@@ -168,7 +168,7 @@ pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<Strin
             reason
         );
     }
-    if std::env::var("AGY_AUTO_APPROVE_SILENT")
+    if std::env::var("ANY_AUTO_SILENT")
         .unwrap_or_default()
         .is_empty()
     {
@@ -178,7 +178,7 @@ pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<Strin
             _ => 33,
         };
         eprintln!(
-            "\x1b[{color}m[agy-auto-approve: {}]\x1b[0m {tool} -> {reason}",
+            "\x1b[{color}m[any-auto: {}]\x1b[0m {tool} -> {reason}",
             decision.to_uppercase()
         );
     }
@@ -240,7 +240,7 @@ async fn evaluate_inner(
     reviewer: &mut Value,
 ) -> Value {
     let tool = payload["toolCall"]["name"].as_str().unwrap_or("");
-    if std::env::var_os("AGY_AUTO_APPROVE_REVIEWER").is_some() {
+    if std::env::var_os("ANY_AUTO_REVIEWER").is_some() {
         *stage = "reviewer_recursion";
         return result(
             "deny",

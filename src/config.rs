@@ -99,7 +99,7 @@ pub fn backend_path() -> anyhow::Result<std::ffi::OsString> {
     Ok(env::join_paths(paths)?)
 }
 pub fn log_dir() -> PathBuf {
-    env::var_os("AGY_AUTO_APPROVE_LOG_DIR")
+    env::var_os("ANY_AUTO_LOG_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| data_dir().join("logs"))
 }
@@ -107,10 +107,10 @@ pub fn state_dir() -> PathBuf {
     state_dir_for(mode())
 }
 pub fn state_dir_for(mode: Mode) -> PathBuf {
-    if let Some(base) = env::var_os("AGY_APPROVER_STATE_DIR").filter(|v| !v.is_empty()) {
+    if let Some(base) = env::var_os("ANY_AUTO_STATE_DIR").filter(|v| !v.is_empty()) {
         return PathBuf::from(base).join(format!("{}{}", mode.as_str(), instance_suffix()));
     }
-    if env::var_os("AGY_AUTO_APPROVE_LOG_DIR").is_some_and(|v| !v.is_empty()) {
+    if env::var_os("ANY_AUTO_LOG_DIR").is_some_and(|v| !v.is_empty()) {
         return log_dir()
             .join("state")
             .join(format!("{}{}", mode.as_str(), instance_suffix()));
@@ -124,7 +124,7 @@ pub fn socket_path() -> PathBuf {
     socket_path_for(mode())
 }
 pub fn socket_path_for(_mode: Mode) -> PathBuf {
-    env::var_os("AGY_APPROVER_SOCKET")
+    env::var_os("ANY_AUTO_SOCKET")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| runtime_dir().join("approver.sock"))
@@ -135,7 +135,7 @@ fn xdg(name: &str, fallback: &str) -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .unwrap_or_else(|| home().join(fallback))
-        .join("agy-auto-approve")
+        .join("any-auto")
 }
 pub fn config_dir() -> PathBuf {
     xdg("XDG_CONFIG_HOME", ".config")
@@ -147,7 +147,7 @@ pub fn runtime_dir() -> PathBuf {
     env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .map(|p| p.join("agy-auto-approve"))
+        .map(|p| p.join("any-auto"))
         .unwrap_or_else(data_dir)
         .join("runtime")
 }
@@ -260,7 +260,7 @@ fn resolve(
     default: &str,
     environment: bool,
 ) -> anyhow::Result<(String, String)> {
-    let variable = format!("AGY_AUTO_APPROVE_{}", name.to_uppercase());
+    let variable = format!("ANY_AUTO_{}", name.to_uppercase());
     if let Ok(value) = crate::context::var(&variable)
         && environment
         && !value.is_empty()
@@ -343,7 +343,7 @@ fn resolve_config(
     if agent.api_key_env.is_some() {
         settings.api_key_env = agent.api_key_env;
     }
-    if let Ok(value) = crate::context::var("AGY_AUTO_APPROVE_PROVIDER")
+    if let Ok(value) = crate::context::var("ANY_AUTO_PROVIDER")
         && environment
         && !value.is_empty()
     {
@@ -356,7 +356,7 @@ fn resolve_config(
             sources.values_mut().for_each(|s| *s = "default".into());
         }
         settings.provider = Some(provider);
-        sources.insert("provider".into(), "AGY_AUTO_APPROVE_PROVIDER".into());
+        sources.insert("provider".into(), "ANY_AUTO_PROVIDER".into());
     }
     let provider = settings.provider.unwrap_or(defaults);
     let legacy_model = match provider {
@@ -374,19 +374,19 @@ fn resolve_config(
         );
     }
     for (key, var) in [
-        ("model", "AGY_AUTO_APPROVE_APPROVER_MODEL"),
-        ("effort", "AGY_AUTO_APPROVE_EFFORT"),
+        ("model", "ANY_AUTO_APPROVER_MODEL"),
+        ("effort", "ANY_AUTO_EFFORT"),
     ] {
         if environment && crate::context::var(var).is_ok_and(|v| !v.is_empty()) {
             sources.insert(key.into(), var.into());
         }
     }
-    let selected_model = crate::context::var("AGY_AUTO_APPROVE_APPROVER_MODEL")
+    let selected_model = crate::context::var("ANY_AUTO_APPROVER_MODEL")
         .ok()
         .filter(|v| environment && !v.is_empty())
         .or(settings.model)
         .unwrap_or_else(|| legacy_model.into());
-    let effort = crate::context::var("AGY_AUTO_APPROVE_EFFORT")
+    let effort = crate::context::var("ANY_AUTO_EFFORT")
         .ok()
         .filter(|v| environment && !v.is_empty())
         .or(settings.effort)
@@ -515,7 +515,7 @@ pub fn edit() -> anyhow::Result<()> {
     let status = std::process::Command::new("/bin/sh")
         .arg("-c")
         .arg(format!("exec {editor} \"$1\""))
-        .arg("agy-config-editor")
+        .arg("any-auto-config-editor")
         .arg(&path)
         .status()
         .context("Cannot launch configuration editor")?;

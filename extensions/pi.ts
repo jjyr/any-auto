@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 // The installer replaces this literal with the absolute executable path.
-const executable = "agy-auto-approve";
+const executable = "any-auto";
 
 export default function (pi: ExtensionAPI) {
   let branch = "";
@@ -16,7 +16,7 @@ export default function (pi: ExtensionAPI) {
     pi.appendEntry("agy-approval-branch", branch);
   });
   pi.on("tool_call", async (event, ctx) => {
-    if (process.env.AGY_AUTO_APPROVE_REVIEWER) {
+    if (process.env.ANY_AUTO_REVIEWER) {
       return { block: true, reason: "Approval reviewers may not invoke tools." };
     }
     const requestId = randomUUID();

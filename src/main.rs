@@ -1,4 +1,4 @@
-use agy_auto_approve::{audit, config, daemon, install, pipeline, stats, ui, upgrade};
+use any_auto::{audit, config, daemon, install, pipeline, stats, ui, upgrade};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -118,7 +118,7 @@ async fn main() -> Result<()> {
     config::set_instance(
         cli.instance
             .clone()
-            .or_else(|| std::env::var("AGY_AUTO_APPROVE_INSTANCE").ok())
+            .or_else(|| std::env::var("ANY_AUTO_INSTANCE").ok())
             .unwrap_or_else(|| "default".into()),
     )?;
     config::set_mode(cli.mode.unwrap_or_else(|| {

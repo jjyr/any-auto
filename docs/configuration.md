@@ -1,6 +1,6 @@
 # Configuration
 
-The optional global file is `~/.config/agy-auto-approve/config.toml`. No file is
+The optional global file is `~/.config/any-auto/config.toml`. No file is
 needed for the defaults. Unknown fields, malformed TOML, invalid providers and
 unsupported effort values are errors. Configuration is not read from projects.
 
@@ -101,9 +101,9 @@ refusals, incomplete responses and invalid assessments fail closed.
 ## Applying changes
 
 ```bash
-agy-auto-approve config --agent pi --json
-agy-auto-approve config --edit
-agy-auto-approve daemon reset --agent pi
+any-auto config --agent pi --json
+any-auto config --edit
+any-auto daemon reset --agent pi
 ```
 
 Configuration is resolved before each model review. A changed effective
@@ -124,16 +124,16 @@ Pi users do not need agy installed.
 
 | Variable | Purpose |
 | --- | --- |
-| `AGY_AUTO_APPROVE_INSTANCE` | Operational instance name when --instance is omitted |
-| `AGY_AUTO_APPROVE_PROVIDER` | pi, cli, openai, agentapi |
-| `AGY_AUTO_APPROVE_APPROVER_MODEL` | Model for the selected provider |
-| `AGY_AUTO_APPROVE_EFFORT` | Backend-specific effort |
-| `AGY_AUTO_APPROVE_MODEL`, `AGY_AUTO_APPROVE_CLI_MODEL` | Legacy agentapi tier / agy model |
-| `AGY_AUTO_APPROVE_PROMPT` | Policy replacement |
-| `AGY_APPROVER_SOCKET` | Socket base, default `~/.local/share/agy-auto-approve/runtime/approver.sock` |
-| `AGY_APPROVER_STATE_DIR` | State base, default `~/.local/share/agy-auto-approve/agents` |
-| `AGY_AUTO_APPROVE_LOG_DIR` | Shared daily logs, default `~/.local/share/agy-auto-approve/logs` |
-| `AGY_AUTO_APPROVE_SILENT` | Suppress hook stderr notices |
+| `ANY_AUTO_INSTANCE` | Operational instance name when --instance is omitted |
+| `ANY_AUTO_PROVIDER` | pi, cli, openai, agentapi |
+| `ANY_AUTO_APPROVER_MODEL` | Model for the selected provider |
+| `ANY_AUTO_EFFORT` | Backend-specific effort |
+| `ANY_AUTO_MODEL`, `ANY_AUTO_CLI_MODEL` | Legacy agentapi tier / agy model |
+| `ANY_AUTO_PROMPT` | Policy replacement |
+| `ANY_AUTO_SOCKET` | Socket base, default `~/.local/share/any-auto/runtime/approver.sock` |
+| `ANY_AUTO_STATE_DIR` | State base, default `~/.local/share/any-auto/agents` |
+| `ANY_AUTO_LOG_DIR` | Shared daily logs, default `~/.local/share/any-auto/logs` |
+| `ANY_AUTO_SILENT` | Suppress hook stderr notices |
 | `PI_CODING_AGENT_DIR` | Pi configuration/authentication source and extension installation root |
 
 The socket is shared across all agents and instances. State remains isolated by agent
@@ -144,7 +144,7 @@ subdirectory. The binary preserves each caller's backend PATH and appends
 
 ## Overview, TUI and directories
 
-Bare `agy-auto-approve` opens the terminal menu. The configuration form can edit
+Bare `any-auto` opens the terminal menu. The configuration form can edit
 per-agent approver backend, model and effort; installation uses the same form.
 Agentapi has no effort selector. Other model-specific capabilities are checked during
 review, not by sending paid requests in the form. Secrets remain in environment variables.
@@ -161,6 +161,6 @@ Before upgrading an active installation, stop its old daemons using the old bina
 the new default paths do not discover processes listening on legacy sockets.
 
 Default state directories are `agents/<agent>/<instance>` under the application data root.
-Runtime sockets use `$XDG_RUNTIME_DIR/agy-auto-approve/runtime` when set to an absolute
+Runtime sockets use `$XDG_RUNTIME_DIR/any-auto/runtime` when set to an absolute
 path, otherwise the application data directory's `runtime/` directory. Explicit socket
 overrides identify one shared socket; state overrides retain agent/instance suffixes.

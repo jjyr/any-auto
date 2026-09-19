@@ -44,7 +44,7 @@ class BumpVersionTests(unittest.TestCase):
     def assert_version(self, expected):
         for filename in ["Cargo.toml", "Cargo.lock"]:
             text = (self.repo / filename).read_text()
-            version = re.search(r'name = "agy-auto-approve"\nversion = "([^"]+)"', text).group(1)
+            version = re.search(r'name = "any-auto"\nversion = "([^"]+)"', text).group(1)
             self.assertEqual(version, expected)
         self.assertEqual(self.git("tag", "--list"), "")
 
@@ -65,7 +65,7 @@ class BumpVersionTests(unittest.TestCase):
         for filename in ["Cargo.toml", "Cargo.lock"]:
             before = self.git("show", f"HEAD^:{filename}")
             after = (self.repo / filename).read_text().strip()
-            old = re.search(r'name = "agy-auto-approve"\nversion = "([^"]+)"', before).group(1)
+            old = re.search(r'name = "any-auto"\nversion = "([^"]+)"', before).group(1)
             self.assertEqual(after, before.replace(f'version = "{old}"',
                                                    f'version = "{expected}"', 1))
         self.assertIn("open a PR into main", result.stdout)

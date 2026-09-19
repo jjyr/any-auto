@@ -155,7 +155,7 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
             .unwrap_or_else(|| config::home().join(".pi/agent"));
         println!(
             "Would install {}",
-            base.join("extensions/agy-auto-approve.ts").display()
+            base.join("extensions/any-auto.ts").display()
         );
     }
     if options.dry_run {
@@ -206,15 +206,15 @@ pub fn doctor() -> Result<()> {
             Agent::AgyCli => std::fs::read(base.join("hooks.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .is_some_and(|v| v["agy-auto-approve"]["enabled"] == true),
+                .is_some_and(|v| v["any-auto"]["enabled"] == true),
             Agent::AgyDesktop => std::fs::read(base.join("config.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .is_some_and(|v| v["sidecars"]["agy-auto-approve/approver"]["enabled"] == true),
+                .is_some_and(|v| v["sidecars"]["any-auto/approver"]["enabled"] == true),
             Agent::Pi => std::env::var_os("PI_CODING_AGENT_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| config::home().join(".pi/agent"))
-                .join("extensions/agy-auto-approve.ts")
+                .join("extensions/any-auto.ts")
                 .is_file(),
         };
         println!("  integration_installed={installed}");

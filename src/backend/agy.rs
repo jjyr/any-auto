@@ -80,7 +80,7 @@ impl AgyBackend {
         let mut command = Command::new("agy");
         command
             .current_dir(cwd)
-            .env("AGY_AUTO_APPROVE_REVIEWER", "1")
+            .env("ANY_AUTO_REVIEWER", "1")
             .env_remove("ANTIGRAVITY_LS_ADDRESS")
             .env_remove("ANTIGRAVITY_CSRF_TOKEN");
         let state_path = self

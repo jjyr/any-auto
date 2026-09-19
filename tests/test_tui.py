@@ -1,4 +1,4 @@
-"""PTY smoke checks: python3 tests/test_tui.py /path/to/agy-auto-approve"""
+"""PTY smoke checks: python3 tests/test_tui.py /path/to/any-auto"""
 import os
 import pty
 import select
@@ -17,7 +17,7 @@ def exercise(args, script, verify):
         pid, fd = pty.fork()
         if pid == 0:
             for key in list(os.environ):
-                if key.startswith(("XDG_", "AGY_", "PI_")):
+                if key.startswith(("XDG_", "ANY_AUTO_", "PI_")):
                     del os.environ[key]
             os.environ.update(HOME=root, TERM="xterm", PATH="/nonexistent")
             os.execv(BINARY, [BINARY, *args])
@@ -60,13 +60,13 @@ def unchanged(home):
 
 def installed(home):
     assert (home / ".gemini/config/hooks.json").is_file()
-    text = (home / ".config/agy-auto-approve/config.toml").read_text()
+    text = (home / ".config/any-auto/config.toml").read_text()
     assert 'agy-cli' in text, text
     assert 'provider = "pi"' in text
     assert 'model = "example/model"' in text
 
 
-exercise([], [(b"agy-auto-approve", b"\x1b")], unchanged)
+exercise([], [(b"any-auto", b"\x1b")], unchanged)
 exercise(["install"], [(b"Install integrations", b"\x1b")], unchanged)
 # First item (agy CLI) is undetected with the isolated PATH; select it.
 customize = [

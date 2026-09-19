@@ -1,4 +1,4 @@
-use agy_auto_approve::{
+use any_auto::{
     parser,
     pipeline::{Breaker, blacklist, read_only},
     reviewer::parse,

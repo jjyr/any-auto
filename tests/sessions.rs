@@ -1,4 +1,4 @@
-use agy_auto_approve::{config::Mode, sessions::directory};
+use any_auto::{config::Mode, sessions::directory};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -65,7 +65,7 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
         agent
     }
     fn command(&self, mode: &str) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         c.args([
             "--agent",
             match mode {
@@ -76,14 +76,14 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
         ])
         .env("HOME", self.root.path())
         .env("PATH", self.root.path())
-        .env("AGY_APPROVER_SOCKET", self.root.path().join("a.sock"))
-        .env("AGY_APPROVER_STATE_DIR", self.root.path().join("state"))
-        .env("AGY_AUTO_APPROVE_LOG_DIR", self.root.path().join("logs"))
-        .env("AGY_AUTO_APPROVE_SILENT", "1")
-        .env_remove("AGY_AUTO_APPROVE_REVIEWER")
-        .env_remove("AGY_AUTO_APPROVE_MODEL")
-        .env_remove("AGY_AUTO_APPROVE_CLI_MODEL")
-        .env_remove("AGY_AUTO_APPROVE_PROMPT")
+        .env("ANY_AUTO_SOCKET", self.root.path().join("a.sock"))
+        .env("ANY_AUTO_STATE_DIR", self.root.path().join("state"))
+        .env("ANY_AUTO_LOG_DIR", self.root.path().join("logs"))
+        .env("ANY_AUTO_SILENT", "1")
+        .env_remove("ANY_AUTO_REVIEWER")
+        .env_remove("ANY_AUTO_MODEL")
+        .env_remove("ANY_AUTO_CLI_MODEL")
+        .env_remove("ANY_AUTO_PROMPT")
         .current_dir(self.root.path());
         c
     }

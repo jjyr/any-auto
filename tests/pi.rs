@@ -17,7 +17,7 @@ impl Agent {
         let script = r#"#!/bin/sh
 printf '%s\n' "$$" >> "$HOME/pi-pids"
 printf '%s\n' "$@" >> "$HOME/pi-args"
-[ "$AGY_AUTO_APPROVE_REVIEWER" = 1 ] || exit 3
+[ "$ANY_AUTO_REVIEWER" = 1 ] || exit 3
 [ "$PI_CODING_AGENT_DIR" = "$HOME/.pi/agent" ] || exit 4
 count=0
 while IFS= read -r line; do
@@ -47,20 +47,20 @@ done
         agent
     }
     fn cmd(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         c.env("HOME", self.root.path())
             .env("PATH", self.root.path())
-            .env("AGY_APPROVER_SOCKET", self.root.path().join("a.sock"))
-            .env("AGY_AUTO_APPROVE_LOG_DIR", self.root.path().join("logs"))
-            .env("AGY_APPROVER_STATE_DIR", self.root.path().join("state"))
+            .env("ANY_AUTO_SOCKET", self.root.path().join("a.sock"))
+            .env("ANY_AUTO_LOG_DIR", self.root.path().join("logs"))
+            .env("ANY_AUTO_STATE_DIR", self.root.path().join("state"))
             .env_remove("PI_CODING_AGENT_DIR")
-            .env_remove("AGY_AUTO_APPROVE_REVIEWER")
-            .env_remove("AGY_AUTO_APPROVE_PROVIDER")
-            .env_remove("AGY_AUTO_APPROVE_EFFORT")
-            .env_remove("AGY_AUTO_APPROVE_APPROVER_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_CLI_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_PROMPT");
+            .env_remove("ANY_AUTO_REVIEWER")
+            .env_remove("ANY_AUTO_PROVIDER")
+            .env_remove("ANY_AUTO_EFFORT")
+            .env_remove("ANY_AUTO_APPROVER_MODEL")
+            .env_remove("ANY_AUTO_MODEL")
+            .env_remove("ANY_AUTO_CLI_MODEL")
+            .env_remove("ANY_AUTO_PROMPT");
         c
     }
     fn run(&self, args: &[&str]) -> String {
@@ -94,7 +94,7 @@ done
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn config(&self, text: &str) {
-        let p = self.root.path().join(".config/agy-auto-approve");
+        let p = self.root.path().join(".config/any-auto");
         fs::create_dir_all(&p).unwrap();
         fs::write(p.join("config.toml"), text).unwrap();
     }
@@ -177,19 +177,9 @@ fn host_override_resets_foreign_model_and_install_only_touches_pi() {
     assert!(c["reviewer"]["approver"]["model"].is_null());
     assert!(c["reviewer"]["approver"]["effort"].is_null());
     h.run(&["install", "--pi"]);
-    let ext = fs::read_to_string(
-        h.root
-            .path()
-            .join(".pi/agent/extensions/agy-auto-approve.ts"),
-    )
-    .unwrap();
-    assert!(ext.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
-    assert!(
-        !h.root
-            .path()
-            .join(".config/agy-auto-approve/hooks.json")
-            .exists()
-    );
+    let ext = fs::read_to_string(h.root.path().join(".pi/agent/extensions/any-auto.ts")).unwrap();
+    assert!(ext.contains(env!("CARGO_BIN_EXE_any-auto")));
+    assert!(!h.root.path().join(".config/any-auto/hooks.json").exists());
 }
 
 #[test]
@@ -337,7 +327,7 @@ fn logs_use_request_provider_instead_of_daemon_startup_environment() {
     fs::set_permissions(h.root.path().join("agy"), fs::Permissions::from_mode(0o755)).unwrap();
     let mut hook = h
         .cmd()
-        .env("AGY_AUTO_APPROVE_PROVIDER", "cli")
+        .env("ANY_AUTO_PROVIDER", "cli")
         .args(["hook", "--agent", "pi"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -418,9 +408,8 @@ fn pi_sessions_are_private_and_idle_children_are_reaped_then_restored() {
         .collect();
     assert_eq!(pids.len(), 2);
     assert_ne!(pids[0], pids[1]);
-    let state =
-        agy_auto_approve::sessions::directory(&h.root.path().join("state/pi"), "same-conversation")
-            .join("reviewer_session.json");
+    let state = any_auto::sessions::directory(&h.root.path().join("state/pi"), "same-conversation")
+        .join("reviewer_session.json");
     let saved = fs::read(&state).unwrap();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {

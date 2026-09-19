@@ -5,10 +5,10 @@ Desktop reviewer is agentapi; the approver provider can also be pi, cli, or open
 See [configuration](configuration.md) for provider selection and
 [commands](commands.md) for current daemon, log and stats behavior.
 
-`install --desktop-only` enables `agy-auto-approve/approver` in
+`install --desktop-only` enables `any-auto/approver` in
 `~/.gemini/config/config.json` and writes manifests under
 `~/.gemini/config/sidecars/approver/sidecar.json` and
-`sidecars/agy-auto-approve/approver/sidecar.json`. The launch command is the absolute
+`sidecars/any-auto/approver/sidecar.json`. The launch command is the absolute
 binary path with `daemon start`, an idempotent bootstrap that detaches the shared daemon. Hook registration is shared by agy
 CLI/Desktop; `ANTIGRAVITY_LS_ADDRESS` selects Desktop unless overridden.
 

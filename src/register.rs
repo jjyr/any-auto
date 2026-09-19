@@ -48,7 +48,7 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
     let base = config::home().join(".gemini/config");
     if !desktop_only {
         update(&base.join("hooks.json"), dry_run, |v| {
-            v["agy-auto-approve"] = json!({"enabled":true,"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":format!("{quoted} hook"),"timeout":30}]}]});
+            v["any-auto"] = json!({"enabled":true,"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":format!("{quoted} hook"),"timeout":30}]}]});
             Ok(())
         })?;
         let settings = config::home().join(".gemini/antigravity-cli/settings.json");
@@ -72,12 +72,12 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
     }
     if !cli_only {
         update(&base.join("config.json"), dry_run, |v| {
-            object_field(v, "sidecars")?["agy-auto-approve/approver"] = json!({"enabled":true});
+            object_field(v, "sidecars")?["any-auto/approver"] = json!({"enabled":true});
             Ok(())
         })?;
         for relative in [
             "sidecars/approver/sidecar.json",
-            "sidecars/agy-auto-approve/approver/sidecar.json",
+            "sidecars/any-auto/approver/sidecar.json",
         ] {
             update(&base.join(relative), dry_run, |v| {
                 *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","start"]});
@@ -94,10 +94,10 @@ pub fn register_pi() -> Result<()> {
     let base = std::env::var_os("PI_CODING_AGENT_DIR")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| config::home().join(".pi/agent"));
-    let path = base.join("extensions/agy-auto-approve.ts");
+    let path = base.join("extensions/any-auto.ts");
     fs::create_dir_all(path.parent().unwrap())?;
     let source = include_str!("../extensions/pi.ts").replace(
-        "const executable = \"agy-auto-approve\";",
+        "const executable = \"any-auto\";",
         &format!("const executable = {};", serde_json::to_string(&exe)?),
     );
     let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;

@@ -88,7 +88,7 @@ pub(crate) fn record(path: &Path, cid: Option<&str>, raw: &str) -> Option<Tokens
     state["conversationId"] = json!(current.conversation_id);
     state["usage_baseline"] = json!(current);
     if let Err(error) = save(path, &state) {
-        eprintln!("agy-auto-approve: unable to save token baseline: {error}");
+        eprintln!("any-auto: unable to save token baseline: {error}");
     }
     delta
 }

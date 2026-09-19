@@ -199,7 +199,7 @@ impl PiBackend {
             .current_dir(&self.workspace)
             .env("PI_CODING_AGENT_DIR", &source)
             .env("PI_OFFLINE", "1")
-            .env("AGY_AUTO_APPROVE_REVIEWER", "1")
+            .env("ANY_AUTO_REVIEWER", "1")
             .env("PATH", crate::config::backend_path()?)
             .args([
                 "--mode",

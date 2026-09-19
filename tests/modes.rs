@@ -22,7 +22,7 @@ case "$1" in
 esac
 "#);
         agent.mock("agy", r#"
-[ "$AGY_AUTO_APPROVE_REVIEWER" = 1 ] || exit 4
+[ "$ANY_AUTO_REVIEWER" = 1 ] || exit 4
 [ -z "$ANTIGRAVITY_LS_ADDRESS" ] || exit 5
 case "$PWD" in */state/cli/sessions/*/workspace) ;; *) exit 6;; esac
 [ "$1" = -p ] || exit 7
@@ -50,18 +50,18 @@ fi
         fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
     }
     fn command(&self) -> Command {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         cmd.env("HOME", self.dir.path())
             .env("PATH", self.dir.path())
-            .env("AGY_APPROVER_SOCKET", self.dir.path().join("a.sock"))
-            .env("AGY_APPROVER_STATE_DIR", self.dir.path().join("state"))
-            .env("AGY_AUTO_APPROVE_LOG_DIR", self.dir.path().join("logs"))
-            .env("AGY_AUTO_APPROVE_SILENT", "1")
-            .env("APPROVER_TEST_BIN", env!("CARGO_BIN_EXE_agy-auto-approve"))
-            .env_remove("AGY_AUTO_APPROVE_REVIEWER")
-            .env_remove("AGY_AUTO_APPROVE_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_CLI_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_PROMPT")
+            .env("ANY_AUTO_SOCKET", self.dir.path().join("a.sock"))
+            .env("ANY_AUTO_STATE_DIR", self.dir.path().join("state"))
+            .env("ANY_AUTO_LOG_DIR", self.dir.path().join("logs"))
+            .env("ANY_AUTO_SILENT", "1")
+            .env("APPROVER_TEST_BIN", env!("CARGO_BIN_EXE_any-auto"))
+            .env_remove("ANY_AUTO_REVIEWER")
+            .env_remove("ANY_AUTO_MODEL")
+            .env_remove("ANY_AUTO_CLI_MODEL")
+            .env_remove("ANY_AUTO_PROMPT")
             .env_remove("ANTIGRAVITY_LS_ADDRESS");
         cmd
     }
@@ -167,15 +167,12 @@ fn shared_daemon_routes_agents_and_resets_independently() {
         sidecar["pid"]
     );
     assert!(
-        !agy_auto_approve::sessions::directory(
-            &h.dir.path().join("state/cli"),
-            "same-user-conversation"
-        )
-        .join("reviewer_session.json")
-        .exists()
+        !any_auto::sessions::directory(&h.dir.path().join("state/cli"), "same-user-conversation")
+            .join("reviewer_session.json")
+            .exists()
     );
     assert!(
-        agy_auto_approve::sessions::directory(
+        any_auto::sessions::directory(
             &h.dir.path().join("state/sidecar"),
             "same-user-conversation"
         )
@@ -221,7 +218,7 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
 #[test]
 fn cli_model_and_prompt_are_passed_as_single_arguments() {
     let h = Agent::new();
-    let config = h.dir.path().join(".config/agy-auto-approve");
+    let config = h.dir.path().join(".config/any-auto");
     fs::create_dir_all(&config).unwrap();
     fs::write(config.join("config.toml"), "model = 'pro'\ncli_model = 'gemini-3.8-flash-high'\nprompt = 'custom $(do-not-execute) prompt'\n").unwrap();
     assert_eq!(h.hook(None, false)["decision"], "allow");
@@ -237,11 +234,9 @@ fn cli_cached_session_failure_recreates_only_cli_session() {
     let h = Agent::new();
     assert_eq!(h.hook(None, false)["decision"], "allow");
     h.run(&["daemon", "stop", "--agent", "agy-cli"]);
-    let path = agy_auto_approve::sessions::directory(
-        &h.dir.path().join("state/cli"),
-        "same-user-conversation",
-    )
-    .join("reviewer_session.json");
+    let path =
+        any_auto::sessions::directory(&h.dir.path().join("state/cli"), "same-user-conversation")
+            .join("reviewer_session.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     state["conversationId"] = json!("expired");
     fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
@@ -261,7 +256,7 @@ fn cli_cached_session_failure_recreates_only_cli_session() {
         "new\nsend\nnew\nsend\n"
     );
     assert!(
-        agy_auto_approve::sessions::directory(
+        any_auto::sessions::directory(
             &h.dir.path().join("state/sidecar"),
             "same-user-conversation"
         )
@@ -328,10 +323,8 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
         assert_eq!(&cells[1..4], &["3", "400", "40"]);
         assert_eq!(&cells[5..7], &["133", "13"]);
     }
-    let path = agy_auto_approve::audit::daily_path(
-        &h.dir.path().join("logs"),
-        chrono::Utc::now().date_naive(),
-    );
+    let path =
+        any_auto::audit::daily_path(&h.dir.path().join("logs"), chrono::Utc::now().date_naive());
     assert!(!h.dir.path().join("logs/approvals.jsonl").exists());
     let events: Vec<Value> = fs::read_to_string(path)
         .unwrap()

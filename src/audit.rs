@@ -27,7 +27,7 @@ pub fn request_id() -> String {
 }
 pub fn record(id: &str, event: &str, data: Value) {
     if let Err(error) = append(id, event, data) {
-        eprintln!("agy-auto-approve: unable to write approval history: {error}");
+        eprintln!("any-auto: unable to write approval history: {error}");
     }
 }
 fn append(id: &str, event: &str, data: Value) -> Result<()> {

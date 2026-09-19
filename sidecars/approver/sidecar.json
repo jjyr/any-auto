@@ -1,6 +1,6 @@
 {
   "name": "approver",
   "description": "Antigravity auto-approve daemon sidecar",
-  "command": "agy-auto-approve",
-  "args": ["daemon", "run", "--mode", "sidecar"]
+  "command": "any-auto",
+  "args": ["daemon", "start"]
 }

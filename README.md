@@ -1,4 +1,4 @@
-# agy-auto-approve
+# any-auto
 
 Automatic approval for Antigravity CLI/Desktop and Pi. A shared Rust approval
 pipeline supports agy CLI, agentapi, persistent Pi RPC, and OpenAI Responses
@@ -53,16 +53,16 @@ subsequent requests. Decisions and reasons are logged locally. See the
 
 Choose one way to install the binary.
 
-Download a [GitHub Release](https://github.com/jjyr/agy-auto-approve/releases/latest)
+Download a [GitHub Release](https://github.com/jjyr/any-auto/releases/latest)
 (macOS or Linux, ARM64 or x86_64). Set the release tag and your platform target:
 
 ```bash
 VERSION=v0.4.5
 TARGET=aarch64-apple-darwin
-curl -fLO "https://github.com/jjyr/agy-auto-approve/releases/download/$VERSION/agy-auto-approve-$VERSION-$TARGET.tar.gz"
-tar -xzf "agy-auto-approve-$VERSION-$TARGET.tar.gz"
+curl -fLO "https://github.com/jjyr/any-auto/releases/download/$VERSION/any-auto-$VERSION-$TARGET.tar.gz"
+tar -xzf "any-auto-$VERSION-$TARGET.tar.gz"
 mkdir -p ~/.local/bin
-mv agy-auto-approve ~/.local/bin/
+mv any-auto ~/.local/bin/
 ```
 
 Targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`,
@@ -72,21 +72,21 @@ Make sure `~/.local/bin` is on your `PATH`.
 Or install from crates.io (requires Rust/Cargo and a C compiler):
 
 ```bash
-cargo install agy-auto-approve --locked
+cargo install any-auto --locked
 ```
 
 Then select agent integrations in the terminal wizard:
 
 ```bash
-agy-auto-approve install
-# Scripts: agy-auto-approve install --auto
-# Explicit selection: agy-auto-approve install --agents agy-cli,pi
+any-auto install
+# Scripts: any-auto install --auto
+# Explicit selection: any-auto install --agents agy-cli,pi
 ```
 
 For Pi (0.84.2 or newer):
 
 ```bash
-agy-auto-approve install --pi
+any-auto install --pi
 # Then /reload in Pi
 ```
 
@@ -95,24 +95,24 @@ See the [Pi extension/RPC research](docs/pi-research.md),
 
 ## Terminal menu
 
-Run `agy-auto-approve` without arguments to open agent readiness, installation,
+Run `any-auto` without arguments to open agent readiness, installation,
 configuration, logs and statistics. Explicit subcommands stay noninteractive,
 except bare `install`, which opens its installation wizard.
-Run `agy-auto-approve doctor` for local readiness checks without model requests.
+Run `any-auto doctor` for local readiness checks without model requests.
 
 ## Configuration
 
 ```bash
-agy-auto-approve config --agent pi        # View effective Pi reviewer settings
-agy-auto-approve config --edit           # Edit common and per-agent reviewer settings
-agy-auto-approve daemon reset --agent pi         # Reset Pi reviewer sessions
-agy-auto-approve daemon status                  # Shared daemon and cached instances
+any-auto config --agent pi        # View effective Pi reviewer settings
+any-auto config --edit           # Edit common and per-agent reviewer settings
+any-auto daemon reset --agent pi         # Reset Pi reviewer sessions
+any-auto daemon status                  # Shared daemon and cached instances
 ```
 
 Settings support common defaults, per-agent overrides, and environment overrides. See the
 [configuration reference](docs/configuration.md) for provider, model, effort, and configuration precedence.
 
-Default configuration: `~/.config/agy-auto-approve/config.toml`. No file is needed.
+Default configuration: `~/.config/any-auto/config.toml`. No file is needed.
 Use a common override or select a agent:
 
 ```toml
@@ -132,46 +132,46 @@ For all commands and options, see the [command reference](docs/commands.md). For
 ### Logs
 
 ```bash
-agy-auto-approve logs                     # Recent approvals grouped by agent
-agy-auto-approve logs --no-group          # Merged timeline
-agy-auto-approve logs -f                  # Follow new approvals
-agy-auto-approve logs --decision deny     # Show denied approvals
-agy-auto-approve logs show APPROVAL_ID    # Show the full approval record
+any-auto logs                     # Recent approvals grouped by agent
+any-auto logs --no-group          # Merged timeline
+any-auto logs -f                  # Follow new approvals
+any-auto logs --decision deny     # Show denied approvals
+any-auto logs show APPROVAL_ID    # Show the full approval record
 ```
 
-Logs are stored in `~/.local/share/agy-auto-approve/logs` and can be read without a running daemon.
+Logs are stored in `~/.local/share/any-auto/logs` and can be read without a running daemon.
 
-Example output (`agy-auto-approve logs --limit 2`, rendered by the CLI from illustrative records;
+Example output (`any-auto logs --limit 2`, rendered by the CLI from illustrative records;
 the limit applies to each agent):
 
 ```text
 agent: agy-cli
 2026-09-19T13:11:47+00:00  18c4a2-12ab-0  allow      view_file  stage=whitelist agent=agy-cli provider=cli
-  [agy-auto-approve: ALLOWED] Read-only tool.
+  [any-auto: ALLOWED] Read-only tool.
 2026-09-19T12:11:47+00:00  18c4a1-12ab-0  allow      run_command  stage=reviewer agent=agy-cli provider=cli
-  [agy-auto-approve: ALLOWED] Requested local validation is low risk.
+  [any-auto: ALLOWED] Requested local validation is low risk.
   command: cargo test
   cwd: /workspace/my-project
 agent: pi
 2026-09-16T14:11:47+00:00  18c3b2-34cd-0  ask        bash  stage=reviewer agent=pi provider=pi
-  [agy-auto-approve: ASK] Confirm publishing this package.
+  [any-auto: ASK] Confirm publishing this package.
   command: npm publish
   cwd: /workspace/my-project
 2026-09-07T14:11:47+00:00  18c2c3-34cd-0  allow      bash  stage=reviewer agent=pi provider=pi
-  [agy-auto-approve: ALLOWED] Requested local build is low risk.
+  [any-auto: ALLOWED] Requested local build is low risk.
   command: cargo build --release
   cwd: /workspace/my-project
 ```
 
 ### Approval statistics
 
-Run `agy-auto-approve stats` for tables grouped by agent plus a total of input/output tokens and approval time
+Run `any-auto stats` for tables grouped by agent plus a total of input/output tokens and approval time
 (totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
 there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
 reviews. A separate outcomes table includes rules, errors and human confirmations; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
-Example output (`agy-auto-approve stats`, rendered by the CLI from the same illustrative records):
+Example output (`any-auto stats`, rendered by the CLI from the same illustrative records):
 
 ```text
 agent: agy-cli

@@ -108,7 +108,7 @@ pub fn run() -> Result<()> {
     );
     loop {
         let Some(choice) = Select::new()
-            .with_prompt("agy-auto-approve")
+            .with_prompt("any-auto")
             .items(&[
                 "Agent readiness",
                 "Install integrations",

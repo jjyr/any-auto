@@ -3,18 +3,18 @@
 ## Install and update
 
 ```bash
-agy-auto-approve install                 # Interactive agent selection (terminal required)
-agy-auto-approve install --auto          # Install detected agents, no prompts
-agy-auto-approve install --agents agy-cli,pi
-agy-auto-approve install --dry-run       # Preview detected selection, no writes
-agy-auto-approve install --cli-only
-agy-auto-approve install --desktop-only
-agy-auto-approve install --pi            # Pi extension only; requires Pi 0.84.2+
-agy-auto-approve update
-agy-auto-approve update --version v0.4.5
+any-auto install                 # Interactive agent selection (terminal required)
+any-auto install --auto          # Install detected agents, no prompts
+any-auto install --agents agy-cli,pi
+any-auto install --dry-run       # Preview detected selection, no writes
+any-auto install --cli-only
+any-auto install --desktop-only
+any-auto install --pi            # Pi extension only; requires Pi 0.84.2+
+any-auto update
+any-auto update --version v0.4.5
 ```
 
-`install --pi` atomically writes `extensions/agy-auto-approve.ts` under
+`install --pi` atomically writes `extensions/any-auto.ts` under
 `PI_CODING_AGENT_DIR` or `~/.pi/agent`, with the absolute binary path. Other
 extensions/settings are preserved. Run `/reload` in Pi afterwards. The three
 legacy installation selectors are mutually exclusive; use `--agents` to select several agents.
@@ -27,19 +27,19 @@ integrations and stops the shared daemon. All instances resume lazily on new req
 ## Routing and daemon lifecycle
 
 ```bash
-agy-auto-approve daemon status
-agy-auto-approve daemon status --agent pi --instance work
-agy-auto-approve daemon start
-agy-auto-approve daemon stop
-agy-auto-approve daemon restart
-agy-auto-approve daemon reset --agent pi --instance work
-agy-auto-approve daemon run --idle-timeout 1800 --session-idle-timeout 300
+any-auto daemon status
+any-auto daemon status --agent pi --instance work
+any-auto daemon start
+any-auto daemon stop
+any-auto daemon restart
+any-auto daemon reset --agent pi --instance work
+any-auto daemon run --idle-timeout 1800 --session-idle-timeout 300
 ```
 
 One daemon and socket serve every agent and instance in the application runtime directory.
 `--agent` selects the requesting agent; the old `--host` and `--mode` options are not supported. Hooks auto-detect Desktop
 unless explicitly routed; the Pi extension always selects Pi. Instance defaults to
-`default` (or `AGY_AUTO_APPROVE_INSTANCE`) for requests. Status lists all cached instances
+`default` (or `ANY_AUTO_INSTANCE`) for requests. Status lists all cached instances
 unless filtered; `status --all` is a compatibility alias for the full status object.
 Start/stop/restart affect the entire daemon, even when routing options are supplied.
 
@@ -73,17 +73,17 @@ list. `--limit` applies per agent when grouping by agent. For other grouping dim
 and `--no-group`, it applies globally before grouping. Grouping is not an aggregation of usage.
 
 ```bash
-agy-auto-approve logs                       # Groups by agent
-agy-auto-approve logs --no-group            # Merged time order
-agy-auto-approve logs --agent pi --limit 50
-agy-auto-approve logs --provider pi --decision deny
-agy-auto-approve logs --tool bash --conversation SESSION_ID
-agy-auto-approve logs --instance desktop-two
-agy-auto-approve logs --group-by agent
-agy-auto-approve logs --group-by provider --json
-agy-auto-approve logs --group-by session
-agy-auto-approve logs -f --agent pi
-agy-auto-approve logs show APPROVAL_ID
+any-auto logs                       # Groups by agent
+any-auto logs --no-group            # Merged time order
+any-auto logs --agent pi --limit 50
+any-auto logs --provider pi --decision deny
+any-auto logs --tool bash --conversation SESSION_ID
+any-auto logs --instance desktop-two
+any-auto logs --group-by agent
+any-auto logs --group-by provider --json
+any-auto logs --group-by session
+any-auto logs -f --agent pi
+any-auto logs show APPROVAL_ID
 ```
 
 `--group-by` accepts agent, provider, model, effort, session, instance. Model and
@@ -111,12 +111,12 @@ is one table per agent plus Total. Each table contains rolling 24-hour, 7-day an
 30-day windows, counts, input/output tokens, summed time, and averages.
 
 ```bash
-agy-auto-approve stats
-agy-auto-approve stats --no-group
-agy-auto-approve stats --agent pi --group-by provider
-agy-auto-approve stats --provider pi --group-by model
-agy-auto-approve stats --group-by effort
-agy-auto-approve stats --group-by instance
+any-auto stats
+any-auto stats --no-group
+any-auto stats --agent pi --group-by provider
+any-auto stats --provider pi --group-by model
+any-auto stats --group-by effort
+any-auto stats --group-by instance
 ```
 
 Grouping accepts the same dimensions as logs. Stats model grouping uses backend
@@ -146,8 +146,8 @@ locks throughout the scan. No database or background stats daemon is needed.
 See [configuration](configuration.md) for model/provider/effort settings.
 
 ```bash
-agy-auto-approve config --agent pi --json
-agy-auto-approve config --edit
+any-auto config --agent pi --json
+any-auto config --edit
 ```
 
 `hook` reads one JSON object (up to 1 MiB) from stdin and outputs one JSON decision.
@@ -173,9 +173,9 @@ or paid request is needed. [Pi research](pi-research.md) documents the RPC contr
 ## Terminal menu and diagnostics
 
 ```bash
-agy-auto-approve                  # Terminal menu: readiness/install/config/logs/stats
-agy-auto-approve doctor           # Read-only local detection; no model requests
-agy-auto-approve config           # Effective settings and sources for every agent
+any-auto                  # Terminal menu: readiness/install/config/logs/stats
+any-auto doctor           # Read-only local detection; no model requests
+any-auto config           # Effective settings and sources for every agent
 ```
 
 Only the root invocation without arguments and bare `install` enter interactive mode.

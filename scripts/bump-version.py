@@ -20,7 +20,7 @@ def package_version(text, header):
     )
     matches = []
     for section in sections:
-        if re.search(r'^name = "agy-auto-approve"$', section.group(), re.MULTILINE):
+        if re.search(r'^name = "any-auto"$', section.group(), re.MULTILINE):
             versions = list(re.finditer(r'^version = "([^"]+)"$', section.group(), re.MULTILINE))
             if len(versions) != 1:
                 raise ValueError("Expected one package version")
@@ -28,7 +28,7 @@ def package_version(text, header):
             matches.append((version.group(1), section.start() + version.start(1),
                             section.start() + version.end(1)))
     if len(matches) != 1:
-        raise ValueError("Expected one agy-auto-approve package")
+        raise ValueError("Expected one any-auto package")
     return matches[0]
 
 

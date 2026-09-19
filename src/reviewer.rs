@@ -140,7 +140,9 @@ impl Bridge {
         Self::new(mode, directory, None)
     }
     pub fn temporary(mode: config::Mode) -> Result<Self> {
-        let directory = tempfile::Builder::new().prefix("agy-review-").tempdir()?;
+        let directory = tempfile::Builder::new()
+            .prefix("any-auto-review-")
+            .tempdir()?;
         Ok(Self::new(
             mode,
             directory.path().to_path_buf(),

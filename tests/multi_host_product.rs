@@ -3,14 +3,14 @@ use std::{
     process::{Command, Stdio},
 };
 fn command(home: &std::path::Path) -> Command {
-    let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
     c.env("HOME", home)
         .env_remove("XDG_CONFIG_HOME")
         .env_remove("XDG_DATA_HOME")
         .env_remove("XDG_RUNTIME_DIR")
-        .env_remove("AGY_AUTO_APPROVE_PROVIDER")
-        .env_remove("AGY_AUTO_APPROVE_EFFORT")
-        .env_remove("AGY_AUTO_APPROVE_APPROVER_MODEL")
+        .env_remove("ANY_AUTO_PROVIDER")
+        .env_remove("ANY_AUTO_EFFORT")
+        .env_remove("ANY_AUTO_APPROVER_MODEL")
         .stdin(Stdio::null());
     c
 }
@@ -28,7 +28,7 @@ fn overview_and_xdg_paths_are_agent_neutral() {
     assert_eq!(
         v["file"],
         home.path()
-            .join("custom/agy-auto-approve/config.toml")
+            .join("custom/any-auto/config.toml")
             .to_str()
             .unwrap()
     );
@@ -66,7 +66,7 @@ fn host_group_limit_preserves_quiet_agents_and_outcomes() {
     )
     .unwrap();
     let out = command(home.path())
-        .env("AGY_AUTO_APPROVE_LOG_DIR", &logs)
+        .env("ANY_AUTO_LOG_DIR", &logs)
         .args(["logs", "--limit", "1", "--json"])
         .output()
         .unwrap();
@@ -75,7 +75,7 @@ fn host_group_limit_preserves_quiet_agents_and_outcomes() {
     assert_eq!(v["pi"].as_array().unwrap().len(), 1);
     assert_eq!(v["agy-cli"].as_array().unwrap().len(), 1);
     let out = command(home.path())
-        .env("AGY_AUTO_APPROVE_LOG_DIR", &logs)
+        .env("ANY_AUTO_LOG_DIR", &logs)
         .arg("stats")
         .output()
         .unwrap();
@@ -86,7 +86,7 @@ fn host_group_limit_preserves_quiet_agents_and_outcomes() {
 #[test]
 fn effective_config_reports_sources_and_independent_paths() {
     let home = tempfile::tempdir().unwrap();
-    let dir = home.path().join(".config/agy-auto-approve");
+    let dir = home.path().join(".config/any-auto");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("config.toml"),
@@ -96,10 +96,10 @@ fn effective_config_reports_sources_and_independent_paths() {
     let out = command(home.path())
         .args(["config", "--agent", "pi", "--json"])
         .env("XDG_DATA_HOME", home.path().join("data"))
-        .env("AGY_AUTO_APPROVE_EFFORT", "high")
-        .env_remove("AGY_AUTO_APPROVE_LOG_DIR")
-        .env_remove("AGY_APPROVER_SOCKET")
-        .env_remove("AGY_APPROVER_STATE_DIR")
+        .env("ANY_AUTO_EFFORT", "high")
+        .env_remove("ANY_AUTO_LOG_DIR")
+        .env_remove("ANY_AUTO_SOCKET")
+        .env_remove("ANY_AUTO_STATE_DIR")
         .output()
         .unwrap();
     assert!(out.status.success());
@@ -111,19 +111,19 @@ fn effective_config_reports_sources_and_independent_paths() {
     );
     assert_eq!(
         v["reviewer"]["approver_sources"]["effort"],
-        "AGY_AUTO_APPROVE_EFFORT"
+        "ANY_AUTO_EFFORT"
     );
     assert_eq!(
         v["state_dir"],
         home.path()
-            .join("data/agy-auto-approve/agents/pi/default")
+            .join("data/any-auto/agents/pi/default")
             .to_str()
             .unwrap()
     );
     assert_eq!(
         v["socket"],
         home.path()
-            .join("data/agy-auto-approve/runtime/approver.sock")
+            .join("data/any-auto/runtime/approver.sock")
             .to_str()
             .unwrap()
     );
@@ -143,7 +143,7 @@ fn old_routing_names_are_rejected_without_aliases() {
         let output = command(home.path()).args(&args).output().unwrap();
         assert!(!output.status.success(), "old selector accepted: {args:?}");
     }
-    let dir = home.path().join(".config/agy-auto-approve");
+    let dir = home.path().join(".config/any-auto");
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("config.toml"),

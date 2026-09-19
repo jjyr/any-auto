@@ -23,15 +23,15 @@ impl Sandbox {
         Self { dir, socket }
     }
     fn command(&self) -> Command {
-        let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
+        let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         c.args(["--agent", "agy-desktop"])
             .env("HOME", self.dir.path())
-            .env_remove("AGY_AUTO_APPROVE_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_PROMPT")
-            .env("AGY_APPROVER_SOCKET", self.dir.path().join("a.sock"))
-            .env("AGY_APPROVER_STATE_DIR", self.dir.path().join("state"))
-            .env("AGY_AUTO_APPROVE_LOG_DIR", self.dir.path().join("logs"))
-            .env("AGY_AUTO_APPROVE_SILENT", "1")
+            .env_remove("ANY_AUTO_MODEL")
+            .env_remove("ANY_AUTO_PROMPT")
+            .env("ANY_AUTO_SOCKET", self.dir.path().join("a.sock"))
+            .env("ANY_AUTO_STATE_DIR", self.dir.path().join("state"))
+            .env("ANY_AUTO_LOG_DIR", self.dir.path().join("logs"))
+            .env("ANY_AUTO_SILENT", "1")
             .env("PATH", self.dir.path())
             .current_dir(self.dir.path());
         c
@@ -220,7 +220,7 @@ esac
 "#);
     assert_eq!(s.hook(&payload("git status"))["decision"], "allow");
     assert!(s.run(&["daemon", "stop"]).status.success());
-    let path = agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+    let path = any_auto::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
         .join("reviewer_session.json");
     let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
     state["conversationId"] = json!("expired");
@@ -281,10 +281,10 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
     );
     let v: Value = serde_json::from_slice(&fs::read(config.join("hooks.json")).unwrap()).unwrap();
     assert_eq!(v["other"]["enabled"], true);
-    let command = v["agy-auto-approve"]["PreToolUse"][0]["hooks"][0]["command"]
+    let command = v["any-auto"]["PreToolUse"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
-    assert!(command.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
+    assert!(command.contains(env!("CARGO_BIN_EXE_any-auto")));
     assert!(!command.contains("python"));
     assert!(
         s.run(&["install", "--agents", "agy-cli,agy-desktop"])
@@ -365,13 +365,13 @@ fn prompt_precedence_and_script_inspection() {
         (true, true, "environment"),
     ] {
         let s = Sandbox::new();
-        let global = s.dir.path().join(".config/agy-auto-approve");
+        let global = s.dir.path().join(".config/any-auto");
         fs::create_dir_all(&global).unwrap();
         fs::write(global.join("config.toml"), "prompt = 'global'").unwrap();
         if workspace {
             fs::create_dir_all(s.dir.path().join(".agents")).unwrap();
             fs::write(
-                s.dir.path().join(".agents/agy-auto-approve-prompt.txt"),
+                s.dir.path().join(".agents/any-auto-prompt.txt"),
                 "workspace",
             )
             .unwrap();
@@ -386,9 +386,9 @@ esac
         );
         fs::write(s.dir.path().join("build.sh"), "echo inspected").unwrap();
         let mut cmd = s.command();
-        cmd.env_remove("AGY_AUTO_APPROVE_PROMPT");
+        cmd.env_remove("ANY_AUTO_PROMPT");
         if environment {
-            cmd.env("AGY_AUTO_APPROVE_PROMPT", "environment");
+            cmd.env("ANY_AUTO_PROMPT", "environment");
         }
         let mut child = cmd
             .arg("hook")
@@ -535,10 +535,8 @@ esac
     assert!(!s.run(&["logs", "show", "missing"]).status.success());
     assert!(!s.run(&["logs", "--limit", "0"]).status.success());
     assert!(!s.socket.exists(), "logs must not spawn a daemon");
-    let path = agy_auto_approve::audit::daily_path(
-        &s.dir.path().join("logs"),
-        chrono::Utc::now().date_naive(),
-    );
+    let path =
+        any_auto::audit::daily_path(&s.dir.path().join("logs"), chrono::Utc::now().date_naive());
     assert_eq!(
         fs::metadata(path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -599,8 +597,8 @@ fn installer_handles_prebuilt_binary_and_paths_with_spaces() {
     let s = Sandbox::new();
     let install_dir = s.dir.path().join("bin with 'quote");
     fs::create_dir_all(&install_dir).unwrap();
-    let binary = install_dir.join("agy-auto-approve");
-    fs::copy(env!("CARGO_BIN_EXE_agy-auto-approve"), &binary).unwrap();
+    let binary = install_dir.join("any-auto");
+    fs::copy(env!("CARGO_BIN_EXE_any-auto"), &binary).unwrap();
     let install = |flags: &[&str]| {
         Command::new(&binary)
             .arg("install")
@@ -618,14 +616,14 @@ fn installer_handles_prebuilt_binary_and_paths_with_spaces() {
     let hooks: Value =
         serde_json::from_slice(&fs::read(s.dir.path().join(".gemini/config/hooks.json")).unwrap())
             .unwrap();
-    let hook_command = hooks["agy-auto-approve"]["PreToolUse"][0]["hooks"][0]["command"]
+    let hook_command = hooks["any-auto"]["PreToolUse"][0]["hooks"][0]["command"]
         .as_str()
         .unwrap();
     let mut child = Command::new("/bin/sh")
         .args(["-c", hook_command])
         .env("HOME", s.dir.path())
-        .env("AGY_AUTO_APPROVE_LOG_DIR", s.dir.path().join("logs"))
-        .env("AGY_AUTO_APPROVE_SILENT", "1")
+        .env("ANY_AUTO_LOG_DIR", s.dir.path().join("logs"))
+        .env("ANY_AUTO_SILENT", "1")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .spawn()
@@ -705,10 +703,8 @@ fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
     let next = follower.next();
     assert_eq!(next["tool"], "view_file");
     assert_ne!(next["id"], latest[0]["id"]);
-    let log = agy_auto_approve::audit::daily_path(
-        &s.dir.path().join("logs"),
-        chrono::Utc::now().date_naive(),
-    );
+    let log =
+        any_auto::audit::daily_path(&s.dir.path().join("logs"), chrono::Utc::now().date_naive());
     let event = json!({"schema_version":3, "agent":"agy-desktop", "event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
     let split = event.len() / 2;
     let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
@@ -818,7 +814,7 @@ fn registration_modes_preserve_existing_permissions() {
                 &fs::read(
                     s.dir
                         .path()
-                        .join(".gemini/config/sidecars/agy-auto-approve/approver/sidecar.json"),
+                        .join(".gemini/config/sidecars/any-auto/approver/sidecar.json"),
                 )
                 .unwrap(),
             )
@@ -848,7 +844,7 @@ fn global_config_edit_and_precedence() {
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert!(value["reviewer"]["model"].is_null());
-    assert!(!s.dir.path().join(".config/agy-auto-approve").exists());
+    assert!(!s.dir.path().join(".config/any-auto").exists());
     let editor = s.dir.path().join("editor with spaces");
     fs::write(&editor, "#!/bin/sh\n[ \"$1\" = --wait ] || exit 5\nprintf 'model = \"pro\"\nprompt = \"custom prompt\"\n' > \"$2\"\n").unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
@@ -867,12 +863,12 @@ fn global_config_edit_and_precedence() {
     let out = s
         .command()
         .args(["config", "--json"])
-        .env("AGY_AUTO_APPROVE_MODEL", "flash")
+        .env("ANY_AUTO_MODEL", "flash")
         .output()
         .unwrap();
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(value["reviewer"]["model"], "flash");
-    assert_eq!(value["reviewer"]["model_source"], "AGY_AUTO_APPROVE_MODEL");
+    assert_eq!(value["reviewer"]["model_source"], "ANY_AUTO_MODEL");
     assert_eq!(value["reviewer"]["prompt"], "custom prompt");
     assert!(!s.run(&["config", "--local"]).status.success());
     assert!(!s.run(&["config", "--edit", "--json"]).status.success());
@@ -886,7 +882,7 @@ fn global_config_edit_and_precedence() {
             .success()
     );
     fs::write(
-        s.dir.path().join(".config/agy-auto-approve/config.toml"),
+        s.dir.path().join(".config/any-auto/config.toml"),
         "model = 'unsupported'",
     )
     .unwrap();
@@ -906,29 +902,29 @@ esac
 "#,
     );
     // Restart also starts a stopped daemon and removes a persisted session.
-    fs::create_dir_all(agy_auto_approve::sessions::directory(
+    fs::create_dir_all(any_auto::sessions::directory(
         &s.dir.path().join("state/sidecar"),
         "test",
     ))
     .unwrap();
     fs::write(
-        agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+        any_auto::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
             .join("reviewer_session.json"),
         r#"{"conversationId":"old"}"#,
     )
     .unwrap();
     assert!(s.run(&["daemon", "reset"]).status.success());
     assert!(
-        !agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+        !any_auto::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
             .join("reviewer_session.json")
             .exists()
     );
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let before = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert!(!before.contains("--model="));
-    fs::create_dir_all(s.dir.path().join(".config/agy-auto-approve")).unwrap();
+    fs::create_dir_all(s.dir.path().join(".config/any-auto")).unwrap();
     fs::write(
-        s.dir.path().join(".config/agy-auto-approve/config.toml"),
+        s.dir.path().join(".config/any-auto/config.toml"),
         "model = 'pro'\nprompt = 'new prompt'\n",
     )
     .unwrap();
@@ -952,7 +948,7 @@ esac
         "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
     );
     fs::write(
-        s.dir.path().join(".config/agy-auto-approve/config.toml"),
+        s.dir.path().join(".config/any-auto/config.toml"),
         "model = 'bad'\n",
     )
     .unwrap();
@@ -967,10 +963,10 @@ esac
 #[test]
 fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
     let s = Sandbox::new();
-    let global = s.dir.path().join(".config/agy-auto-approve");
+    let global = s.dir.path().join(".config/any-auto");
     fs::create_dir_all(&global).unwrap();
-    fs::write(global.join("agy-auto-approve-prompt.txt"), "legacy prompt").unwrap();
-    fs::write(global.join("agy-auto-approve-model.txt"), "legacy model").unwrap();
+    fs::write(global.join("any-auto-prompt.txt"), "legacy prompt").unwrap();
+    fs::write(global.join("any-auto-model.txt"), "legacy model").unwrap();
     let out = s.run(&["config", "--json"]);
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();

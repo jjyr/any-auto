@@ -47,12 +47,12 @@ fn relevant(key: &str) -> bool {
         || key.starts_with("AZURE_OPENAI_")
         || matches!(
             key,
-            "AGY_AUTO_APPROVE_PROVIDER"
-                | "AGY_AUTO_APPROVE_APPROVER_MODEL"
-                | "AGY_AUTO_APPROVE_EFFORT"
-                | "AGY_AUTO_APPROVE_MODEL"
-                | "AGY_AUTO_APPROVE_CLI_MODEL"
-                | "AGY_AUTO_APPROVE_PROMPT"
+            "ANY_AUTO_PROVIDER"
+                | "ANY_AUTO_APPROVER_MODEL"
+                | "ANY_AUTO_EFFORT"
+                | "ANY_AUTO_MODEL"
+                | "ANY_AUTO_CLI_MODEL"
+                | "ANY_AUTO_PROMPT"
         )
         || key.ends_with("_API_KEY")
         || key.ends_with("_AUTH_TOKEN")
