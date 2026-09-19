@@ -212,6 +212,14 @@ pi | reviewer:ask | 0 | 1 | 1
 Usage above covers completed model reviews, not total provider billing.
 ```
 
+## Repository layout
+
+Agent plugin files live in [agy/](agy/README.md) and [pi/](pi/README.md).
+`agy/` is the Antigravity plugin root; `pi/extensions/any-auto.ts` is the Pi
+extension source. Shared Rust code remains in `src/`, tests in `tests/`, and
+configuration/protocol documentation in `docs/`. The installer embeds the agent
+files, so installed binaries do not need a source checkout.
+
 ## Releasing
 
 See the [release guide](docs/releasing.md) for crates.io trusted publishing setup

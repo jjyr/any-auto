@@ -13,7 +13,7 @@ test('Pi extension maps decisions, handles noninteractive asks, and records huma
     const capture = join(dir, 'capture.json');
     const executable = join(dir, 'approver');
     await writeFile(executable, `#!${process.execPath}\nconst fs = require('node:fs');\nlet s='';process.stdin.on('data',c=>s+=c);process.stdin.on('end',()=>{const p=JSON.parse(s);fs.writeFileSync(${JSON.stringify(capture)},JSON.stringify({command:process.argv[2],payload:p}));if(process.argv[2]==='hook')process.stdout.write(fs.readFileSync(${JSON.stringify(state)}));});\n`, { mode: 0o755 });
-    const source = (await readFile(new URL('../extensions/pi.ts', import.meta.url), 'utf8')).replace('const executable = "any-auto";', `const executable = ${JSON.stringify(executable)};`);
+    const source = (await readFile(new URL('../pi/extensions/any-auto.ts', import.meta.url), 'utf8')).replace('const executable = "any-auto";', `const executable = ${JSON.stringify(executable)};`);
     const extension = join(dir, 'extension.ts');
     await writeFile(extension, source);
     const { default: install } = await import(pathToFileURL(extension).href);

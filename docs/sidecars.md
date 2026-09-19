@@ -5,6 +5,9 @@ Desktop reviewer is agentapi; the approver provider can also be pi, cli, or open
 See [configuration](configuration.md) for provider selection and
 [commands](commands.md) for current daemon, log and stats behavior.
 
+Plugin source files live under [agy/](../agy/README.md); use that directory as
+the plugin root when loading from a checkout. The installer embeds those JSON templates.
+
 `install --desktop-only` enables `any-auto/approver` in
 `~/.gemini/config/config.json` and writes manifests under
 `~/.gemini/config/sidecars/approver/sidecar.json` and

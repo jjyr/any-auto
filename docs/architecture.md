@@ -43,8 +43,8 @@ is permitted. Context values are not included in audit events. Backend child pro
 receive the caller's relevant environment explicitly instead of using the first starter's
 credentials or Desktop connection. Changes to context invalidate incompatible reviewer sessions.
 
-Configuration and audit data live under application-owned XDG directories. Only integration
-files belong in `.gemini` or Pi's extension directory. Installation previews mutations and
+Configuration and audit data live under application-owned XDG directories. Plugin sources are grouped under `agy/` and `pi/`, and embedded in the binary.
+Only installed integration files belong in `.gemini` or Pi's extension directory. Installation previews mutations and
 validates selected agy JSON configurations before writing. Individual files are atomically
 replaced; installation is not a cross-file transaction.
 

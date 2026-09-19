@@ -45,10 +45,39 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
     let exe = std::env::current_exe()?.canonicalize()?;
     let executable = exe.to_str().context("Executable path is not UTF-8")?;
     let quoted = format!("'{}'", executable.replace('\'', "'\"'\"'"));
+    let plugin: Value = serde_json::from_str(include_str!("../agy/plugin.json"))?;
+    let plugin_name = plugin["name"]
+        .as_str()
+        .context("Plugin template requires name")?;
+    let mut hooks: Value = serde_json::from_str(include_str!("../agy/hooks.json"))?;
+    let entries = hooks[plugin_name]["PreToolUse"]
+        .as_array_mut()
+        .context("Hook template requires PreToolUse")?;
+    for entry in entries {
+        for hook in entry["hooks"]
+            .as_array_mut()
+            .context("Hook template requires hooks")?
+        {
+            let command = hook["command"]
+                .as_str()
+                .context("Hook template requires command")?;
+            let args = command
+                .strip_prefix(&format!("{plugin_name} "))
+                .context("Unexpected hook executable in template")?;
+            hook["command"] = json!(format!("{quoted} {args}"));
+        }
+    }
+    let mut sidecar: Value =
+        serde_json::from_str(include_str!("../agy/sidecars/approver/sidecar.json"))?;
+    sidecar["command"] = json!(executable);
+    let sidecar_name = sidecar["name"]
+        .as_str()
+        .context("Sidecar template requires name")?
+        .to_owned();
     let base = config::home().join(".gemini/config");
     if !desktop_only {
         update(&base.join("hooks.json"), dry_run, |v| {
-            v["any-auto"] = json!({"enabled":true,"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":format!("{quoted} hook"),"timeout":30}]}]});
+            v[plugin_name] = hooks[plugin_name].clone();
             Ok(())
         })?;
         let settings = config::home().join(".gemini/antigravity-cli/settings.json");
@@ -72,15 +101,16 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
     }
     if !cli_only {
         update(&base.join("config.json"), dry_run, |v| {
-            object_field(v, "sidecars")?["any-auto/approver"] = json!({"enabled":true});
+            object_field(v, "sidecars")?[format!("{plugin_name}/{sidecar_name}")] =
+                json!({"enabled":true});
             Ok(())
         })?;
         for relative in [
-            "sidecars/approver/sidecar.json",
-            "sidecars/any-auto/approver/sidecar.json",
+            format!("sidecars/{sidecar_name}/sidecar.json"),
+            format!("sidecars/{plugin_name}/{sidecar_name}/sidecar.json"),
         ] {
             update(&base.join(relative), dry_run, |v| {
-                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","start"]});
+                *v = sidecar.clone();
                 Ok(())
             })?;
         }
@@ -96,7 +126,7 @@ pub fn register_pi() -> Result<()> {
         .unwrap_or_else(|| config::home().join(".pi/agent"));
     let path = base.join("extensions/any-auto.ts");
     fs::create_dir_all(path.parent().unwrap())?;
-    let source = include_str!("../extensions/pi.ts").replace(
+    let source = include_str!("../pi/extensions/any-auto.ts").replace(
         "const executable = \"any-auto\";",
         &format!("const executable = {};", serde_json::to_string(&exe)?),
     );
