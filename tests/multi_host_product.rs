@@ -25,6 +25,10 @@ fn overview_and_xdg_paths_are_agent_neutral() {
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["agents"].as_array().unwrap().len(), 3);
+    for agent in v["agents"].as_array().unwrap() {
+        let expected = if agent["agent"] == "pi" { "pi" } else { "cli" };
+        assert_eq!(agent["approver"]["provider"], expected);
+    }
     assert_eq!(
         v["file"],
         home.path()

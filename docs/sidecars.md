@@ -1,7 +1,7 @@
 # Antigravity sidecar
 
 Desktop installation and its agentapi connection remain supported. The default
-Desktop reviewer is agentapi; the approver provider can also be pi, cli, or openai.
+Desktop reviewer is agy CLI (`cli`); configure `agentapi`, `pi`, or `openai` through `any-auto config --edit` if needed.
 See [configuration](configuration.md) for provider selection and
 [commands](commands.md) for current daemon, log and stats behavior.
 

@@ -9,7 +9,7 @@ sessions; logs and statistics can be grouped across them.
 | Agent | Default approver backend |
 | --- | --- |
 | Antigravity CLI | `cli` (agy CLI) |
-| Antigravity Desktop | `agentapi` |
+| Antigravity Desktop | `cli` (agy CLI) |
 | Pi | `pi` (persistent RPC) |
 
 The agent is where approval requests originate. The approver backend decides them;

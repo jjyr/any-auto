@@ -20,7 +20,7 @@ extensions/settings are preserved. Run `/reload` in Pi afterwards. The three
 legacy installation selectors are mutually exclusive; use `--agents` to select several agents.
 Only bare `install` opens the TUI. Any arguments disable interaction.
 The wizard defaults to detected agents, permits pre-installing undetected agents,
-and asks before writing. The wizard optionally configures provider, model and effort before the final confirmation.
+and asks before writing. Installation preserves existing approver settings and does not prompt for provider, model or effort. By default, both agy agents use agy CLI (`cli`) and Pi uses Pi RPC (`pi`). Use `any-auto config --edit` to customize approvers.
 Noninteractive installation preserves existing approver settings. Non-terminal bare calls fail with usage guidance. Update refreshes installed Pi integration as well as enabled agy
 integrations and stops the shared daemon. All instances resume lazily on new requests. See [releasing](releasing.md) for distribution details.
 

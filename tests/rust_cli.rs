@@ -25,6 +25,7 @@ impl Sandbox {
     fn command(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         c.args(["--agent", "agy-desktop"])
+            .env("ANY_AUTO_PROVIDER", "agentapi")
             .env("HOME", self.dir.path())
             .env_remove("ANY_AUTO_MODEL")
             .env_remove("ANY_AUTO_PROMPT")

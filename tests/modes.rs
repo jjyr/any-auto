@@ -14,6 +14,13 @@ impl Agent {
         let agent = Self {
             dir: tempfile::tempdir_in("/tmp").unwrap(),
         };
+        let config_dir = agent.dir.path().join(".config/any-auto");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            "[agents.agy-desktop.approver]\nprovider = \"agentapi\"\n",
+        )
+        .unwrap();
         agent.mock("agentapi", r#"
 case "$1" in
  new-conversation) echo '{"conversationId":"sidecar-session"}';;

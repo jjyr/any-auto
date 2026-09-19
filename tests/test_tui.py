@@ -60,26 +60,17 @@ def unchanged(home):
 
 def installed(home):
     assert (home / ".gemini/config/hooks.json").is_file()
-    text = (home / ".config/any-auto/config.toml").read_text()
-    assert 'agy-cli' in text, text
-    assert 'provider = "pi"' in text
-    assert 'model = "example/model"' in text
+    assert not (home / ".config/any-auto/config.toml").exists()
 
 
 exercise([], [(b"any-auto", b"\x1b")], unchanged)
 exercise(["install"], [(b"Install integrations", b"\x1b")], unchanged)
 # First item (agy CLI) is undetected with the isolated PATH; select it.
-customize = [
-    (b"Install integrations", b" \r"),
-    (b"Customize approver settings?", b"y"),
-    (b"Approver backend", b"\x1b[B\r"),
-    (b"Model (blank", b"example/model\r"),
-    (b"Effort", b"\r"),
-]
+selection = [(b"Install integrations", b" \r")]
 # On machines with Desktop detected, deselect it before running these two cases.
 # Use arrow-down then Space only when the bundle is actually present.
 if Path("/Applications/Antigravity.app").is_dir():
-    customize[0] = (b"Install integrations", b" \x1b[B \r")
-exercise(["install"], customize + [(b"Apply installation?", b"n")], unchanged)
-exercise(["install"], customize + [(b"Apply installation?", b"y")], installed)
-print("TUI root/cancel/staged-config/install: 4 checks passed")
+    selection[0] = (b"Install integrations", b" \x1b[B \r")
+exercise(["install"], selection + [(b"Apply installation?", b"n")], unchanged)
+exercise(["install"], selection + [(b"Apply installation?", b"y")], installed)
+print("TUI root/cancel/install: 4 checks passed")

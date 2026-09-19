@@ -143,7 +143,9 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
             }
         );
     }
-    println!("Existing approver settings are preserved unless explicitly customized.");
+    println!(
+        "Existing approver settings are preserved. Use `any-auto config --edit` to change them."
+    );
     let cli = agents.contains(&Agent::AgyCli);
     let desktop = agents.contains(&Agent::AgyDesktop);
     if cli || desktop {
@@ -162,19 +164,6 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
         println!("Dry run: no files changed.");
         return Ok(());
     }
-    let staged = if interactive {
-        let modes: Vec<_> = agents
-            .iter()
-            .map(|h| match h {
-                Agent::AgyCli => config::Mode::Cli,
-                Agent::AgyDesktop => config::Mode::Sidecar,
-                Agent::Pi => config::Mode::Pi,
-            })
-            .collect();
-        crate::ui::stage_settings(&modes)?
-    } else {
-        None
-    };
     if interactive
         && !Confirm::new()
             .with_prompt("Apply installation?")
@@ -182,9 +171,6 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
             .interact()?
     {
         return Ok(());
-    }
-    if let Some(text) = staged {
-        config::save_text(&text)?;
     }
     if cli || desktop {
         register::register(!desktop, !cli)?;

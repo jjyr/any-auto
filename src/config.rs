@@ -299,7 +299,7 @@ fn resolve_config(
     let (cli_model, cli_model_source) = resolve("cli_model", file.cli_model, "", environment)?;
     let defaults = match mode {
         Mode::Cli => Provider::Cli,
-        Mode::Sidecar => Provider::Agentapi,
+        Mode::Sidecar => Provider::Cli,
         Mode::Pi => Provider::Pi,
     };
     let agent = match mode {

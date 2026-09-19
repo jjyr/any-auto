@@ -9,7 +9,7 @@ unsupported effort values are errors. Configuration is not read from projects.
 | Agent (`--agent`) | Default approver provider | Authentication |
 | --- | --- | --- |
 | `agy-cli` | `cli` — agy executable | Existing agy login |
-| `agy-desktop` | `agentapi` | Desktop connection environment and login |
+| `agy-desktop` | `cli` | agy CLI installation and login |
 | `pi` | `pi` — persistent Pi RPC | Existing Pi authentication or provider environment |
 
 Agent and provider are independent: an agy hook can use Pi RPC, and a Pi extension

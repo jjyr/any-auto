@@ -74,6 +74,10 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
                 other => other,
             },
         ])
+        .env(
+            "ANY_AUTO_PROVIDER",
+            if mode == "sidecar" { "agentapi" } else { "cli" },
+        )
         .env("HOME", self.root.path())
         .env("PATH", self.root.path())
         .env("ANY_AUTO_SOCKET", self.root.path().join("a.sock"))
