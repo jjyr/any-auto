@@ -165,11 +165,11 @@ agent: pi
 
 ### Approval statistics
 
-Run `any-auto stats` for tables grouped by agent plus a total of input/output tokens and approval time
+Run `any-auto stats` for tables grouped by agent showing input/output tokens and approval time
 (totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
 there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
-reviews. A separate outcomes table includes rules, errors and human confirmations; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
+reviews; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
 Example output (`any-auto stats`, rendered by the CLI from the same illustrative records):
 
@@ -190,26 +190,6 @@ agent: pi
 │ Last 7 days   │         1 │        1,800 │           240 │       1.4s │     1,800 │        240 │     1.4s │
 │ Last 30 days  │         2 │        3,900 │           500 │       2.6s │     1,950 │        250 │     1.3s │
 └───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
-Total
-┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
-│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
-├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
-│ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 7 days   │         2 │        4,500 │           560 │       2.4s │     2,250 │        280 │     1.2s │
-│ Last 30 days  │         3 │        6,600 │           820 │       3.6s │     2,200 │        273 │     1.2s │
-└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
-Outcomes (human confirmations are separate events, not additional reviews)
-Group | Outcome | 24h | 7d | 30d
-Total | human_allow | 0 | 1 | 1
-Total | reviewer:allow | 1 | 1 | 2
-Total | reviewer:ask | 0 | 1 | 1
-Total | whitelist:allow | 1 | 1 | 1
-agy-cli | reviewer:allow | 1 | 1 | 1
-agy-cli | whitelist:allow | 1 | 1 | 1
-pi | human_allow | 0 | 1 | 1
-pi | reviewer:allow | 0 | 0 | 1
-pi | reviewer:ask | 0 | 1 | 1
-Usage above covers completed model reviews, not total provider billing.
 ```
 
 ## Repository layout

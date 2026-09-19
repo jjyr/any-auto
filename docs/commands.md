@@ -107,7 +107,7 @@ File permissions are 0600. There is no automatic retention cleanup.
 ## Stats: usage and latency aggregates
 
 Stats answer **which agent/backend consumed the reviews and tokens?** Default output
-is one table per agent plus Total. Each table contains rolling 24-hour, 7-day and
+is one table per agent, without a combined total or outcomes section. Each table contains rolling 24-hour, 7-day and
 30-day windows, counts, input/output tokens, summed time, and averages.
 
 ```bash
@@ -185,7 +185,4 @@ Non-terminal interactive invocations fail with actionable guidance.
 It does not verify login, model access or Pi version compatibility.
 The terminal menu uses the same shared-daemon routing as CLI commands.
 
-Stats also prints a separate outcomes table with the same rolling windows and filters.
-Rows distinguish pipeline stage/decision and human confirmations. Human confirmations
-are separate events, not extra model reviews. Model usage excludes failed reviews and
-must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.
+Stats includes only completed model reviews; local rules and human confirmations remain available in logs. Usage must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.

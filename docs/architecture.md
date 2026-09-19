@@ -19,7 +19,7 @@ agy CLI hook       Desktop hook       Pi extension
                          |
                  shared audit JSONL files
                     /          \
-               logs by agent   stats by agent + Total
+               logs by agent   stats by agent
 
 CLI commands / root TUI
             |

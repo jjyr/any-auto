@@ -84,7 +84,10 @@ fn host_group_limit_preserves_quiet_agents_and_outcomes() {
         .output()
         .unwrap();
     assert!(out.status.success());
-    assert!(String::from_utf8_lossy(&out.stdout).contains("Total | whitelist:allow | 3 | 3 | 3"));
+    assert!(
+        out.stdout.is_empty(),
+        "Local rule decisions are not model review statistics"
+    );
 }
 
 #[test]

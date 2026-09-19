@@ -367,7 +367,6 @@ fn logs_and_stats_default_to_agent_groups() {
     assert!(plain.starts_with("agent: pi\n"), "{plain}");
     let stats = h.run(&["stats"]);
     assert!(stats.starts_with("agent: pi\n"), "{stats}");
-    assert!(stats.contains("\nTotal\n"), "{stats}");
     let merged: Value = serde_json::from_str(&h.run(&["logs", "--no-group", "--json"])).unwrap();
     assert_eq!(merged.as_array().unwrap().len(), 1);
 }
