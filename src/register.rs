@@ -2,7 +2,7 @@ use crate::config;
 use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 use std::{fs, path::Path};
-fn update(path: &Path, f: impl FnOnce(&mut Value) -> Result<()>) -> Result<()> {
+fn update(path: &Path, dry_run: bool, f: impl FnOnce(&mut Value) -> Result<()>) -> Result<()> {
     let mut data = match fs::read(path) {
         Ok(bytes) => serde_json::from_slice::<Value>(&bytes)
             .with_context(|| format!("Invalid JSON in {}; leaving it unchanged", path.display()))?,
@@ -13,6 +13,10 @@ fn update(path: &Path, f: impl FnOnce(&mut Value) -> Result<()>) -> Result<()> {
         bail!("Expected JSON object in {}", path.display());
     }
     f(&mut data)?;
+    if dry_run {
+        println!("Would update {}", path.display());
+        return Ok(());
+    }
     fs::create_dir_all(path.parent().unwrap())?;
     let tmp = path.with_extension(format!("{}.tmp", std::process::id()));
     fs::write(&tmp, serde_json::to_vec_pretty(&data)?)?;
@@ -30,18 +34,55 @@ fn object_field<'a>(v: &'a mut Value, key: &str) -> Result<&'a mut Value> {
     Ok(&mut v[key])
 }
 pub fn register(cli_only: bool, desktop_only: bool) -> Result<()> {
+    register_agy(cli_only, desktop_only, false)
+}
+
+pub fn preview(cli_only: bool, desktop_only: bool) -> Result<()> {
+    register_agy(cli_only, desktop_only, true)
+}
+
+fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()> {
     let exe = std::env::current_exe()?.canonicalize()?;
     let executable = exe.to_str().context("Executable path is not UTF-8")?;
     let quoted = format!("'{}'", executable.replace('\'', "'\"'\"'"));
+    let plugin: Value = serde_json::from_str(include_str!("../agy/plugin.json"))?;
+    let plugin_name = plugin["name"]
+        .as_str()
+        .context("Plugin template requires name")?;
+    let mut hooks: Value = serde_json::from_str(include_str!("../agy/hooks.json"))?;
+    let entries = hooks[plugin_name]["PreToolUse"]
+        .as_array_mut()
+        .context("Hook template requires PreToolUse")?;
+    for entry in entries {
+        for hook in entry["hooks"]
+            .as_array_mut()
+            .context("Hook template requires hooks")?
+        {
+            let command = hook["command"]
+                .as_str()
+                .context("Hook template requires command")?;
+            let args = command
+                .strip_prefix(&format!("{plugin_name} "))
+                .context("Unexpected hook executable in template")?;
+            hook["command"] = json!(format!("{quoted} {args}"));
+        }
+    }
+    let mut sidecar: Value =
+        serde_json::from_str(include_str!("../agy/sidecars/approver/sidecar.json"))?;
+    sidecar["command"] = json!(executable);
+    let sidecar_name = sidecar["name"]
+        .as_str()
+        .context("Sidecar template requires name")?
+        .to_owned();
     let base = config::home().join(".gemini/config");
     if !desktop_only {
-        update(&base.join("hooks.json"), |v| {
-            v["agy-auto-approve"] = json!({"enabled":true,"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":format!("{quoted} hook"),"timeout":30}]}]});
+        update(&base.join("hooks.json"), dry_run, |v| {
+            v[plugin_name] = hooks[plugin_name].clone();
             Ok(())
         })?;
         let settings = config::home().join(".gemini/antigravity-cli/settings.json");
         if settings.exists() {
-            update(&settings, |v| {
+            update(&settings, dry_run, |v| {
                 let permissions = object_field(v, "permissions")?;
                 if permissions.get("allow").is_none() {
                     permissions["allow"] = json!([]);
@@ -59,19 +100,40 @@ pub fn register(cli_only: bool, desktop_only: bool) -> Result<()> {
         }
     }
     if !cli_only {
-        update(&base.join("config.json"), |v| {
-            object_field(v, "sidecars")?["agy-auto-approve/approver"] = json!({"enabled":true});
+        update(&base.join("config.json"), dry_run, |v| {
+            object_field(v, "sidecars")?[format!("{plugin_name}/{sidecar_name}")] =
+                json!({"enabled":true});
             Ok(())
         })?;
         for relative in [
-            "sidecars/approver/sidecar.json",
-            "sidecars/agy-auto-approve/approver/sidecar.json",
+            format!("sidecars/{sidecar_name}/sidecar.json"),
+            format!("sidecars/{plugin_name}/{sidecar_name}/sidecar.json"),
         ] {
-            update(&base.join(relative), |v| {
-                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","run","--mode","sidecar"]});
+            update(&base.join(relative), dry_run, |v| {
+                *v = sidecar.clone();
                 Ok(())
             })?;
         }
     }
+    Ok(())
+}
+
+/// Install only the Pi integration, preserving unrelated extensions/settings.
+pub fn register_pi() -> Result<()> {
+    let exe = std::env::current_exe()?.canonicalize()?;
+    let base = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".pi/agent"));
+    let path = base.join("extensions/any-auto.ts");
+    fs::create_dir_all(path.parent().unwrap())?;
+    let source = include_str!("../pi/extensions/any-auto.ts").replace(
+        "const executable = \"any-auto\";",
+        &format!("const executable = {};", serde_json::to_string(&exe)?),
+    );
+    let mut file = tempfile::NamedTempFile::new_in(path.parent().unwrap())?;
+    use std::io::Write;
+    file.write_all(source.as_bytes())?;
+    file.persist(&path)?;
+    println!("Installed {}. Run /reload in Pi.", path.display());
     Ok(())
 }

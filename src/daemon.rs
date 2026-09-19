@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     sync::{Mutex, Notify},
 };
@@ -56,13 +56,13 @@ pub async fn start() -> Result<Value> {
     let path = config::socket_path();
     if let Ok(v) = request(&path, &json!({"action":"ping"}), 1).await
         && v["status"] == "pong"
-        && v["mode"] == json!(config::mode())
+        && v["protocol_version"] == 2
     {
         return Ok(v);
     }
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["daemon", "run", "--mode", config::mode().as_str()])
+        .args(["daemon", "run"])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -72,7 +72,7 @@ pub async fn start() -> Result<Value> {
     while Instant::now() < until {
         if let Ok(v) = request(&path, &json!({"action":"ping"}), 1).await
             && v["status"] == "pong"
-            && v["mode"] == json!(config::mode())
+            && v["protocol_version"] == 2
         {
             return Ok(v);
         }
@@ -81,9 +81,7 @@ pub async fn start() -> Result<Value> {
         let _ = child.try_wait()?;
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    bail!(
-        "Failed to start daemon within timeout; run `agy-auto-approve daemon run` for diagnostics"
-    )
+    bail!("Failed to start daemon within timeout; run `any-auto daemon run` for diagnostics")
 }
 pub async fn stop() -> Result<()> {
     let path = config::socket_path();
@@ -115,41 +113,6 @@ pub async fn restart() -> Result<Value> {
             ) => {}
         Err(e) => return Err(e).context("Cannot contact daemon for restart"),
     }
-    let parent = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
-    let lock = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(path.with_extension("sock.lock"))?;
-    // Socket removal precedes release of the daemon's lifetime lock.
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match lock.try_lock_exclusive() {
-            Ok(()) => break,
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock && Instant::now() < deadline => {
-                tokio::time::sleep(Duration::from_millis(20)).await;
-            }
-            Err(e) => {
-                return Err(e)
-                    .context("Cannot reset reviewer session while another daemon owns the socket");
-            }
-        }
-    }
-    let session = config::state_dir().join("sessions");
-    match fs::remove_dir_all(&session) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => {
-            return Err(e)
-                .with_context(|| format!("Cannot remove cached session {}", session.display()));
-        }
-    }
-    drop(lock);
     start().await
 }
 
@@ -158,7 +121,7 @@ pub async fn review(payload: &Value) -> Result<Assessment> {
 }
 pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     start().await?;
-    let req = json!({"action":"evaluate", "mode":config::mode(), "request_id":id, "user_session_id":crate::sessions::user_session_id(payload), "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"]});
+    let req = json!({"action":"evaluate", "context":crate::context::RequestContext::capture()?, "mode":config::mode(), "request_id":id, "user_session_id":crate::sessions::user_session_id(payload), "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"]});
     let v = request(&config::socket_path(), &req, 25).await?;
     let a: Assessment =
         serde_json::from_value(v["assessment"].clone()).context("Invalid daemon assessment")?;
@@ -168,13 +131,14 @@ pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     Ok(a)
 }
 struct State {
-    sessions: SessionPool,
+    instances: std::sync::Mutex<std::collections::BTreeMap<(String, String), SessionPool>>,
     stop: Notify,
     started: Instant,
     last_active: Mutex<Instant>,
     requests: AtomicU64,
     active: AtomicU64,
     idle_timeout: u64,
+    session_idle_timeout: u64,
 }
 async fn handle(stream: UnixStream, state: Arc<State>) {
     let mut stream = BufReader::new(stream);
@@ -183,30 +147,52 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
         let req: Value = serde_json::from_slice(&bytes)?;
         *state.last_active.lock().await = Instant::now();
         match req["action"].as_str().unwrap_or("") {
-            "ping" | "status" => Ok(json!({"status": if req["action"] == "ping" {"pong"} else {"running"},
-                "mode":config::mode(), "pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
-                "uptime_seconds":state.started.elapsed().as_secs(), "idle_timeout_seconds":state.idle_timeout,
-                "cached_sessions":state.sessions.len(), "evaluations":state.requests.load(Ordering::Relaxed), "active_evaluations":state.active.load(Ordering::Relaxed)})),
+            "ping" | "status" => {
+                let instances = state.instances.lock().unwrap();
+                let details: Vec<_> = instances.iter().filter(|((agent, instance), _)|
+                    req["agent"].as_str().is_none_or(|h| h == agent) && req["instance"].as_str().is_none_or(|i| i == instance))
+                    .map(|((agent, instance), pool)| json!({"agent":agent,"instance":instance,"cached_sessions":pool.len()})).collect();
+                Ok(json!({"status": if req["action"] == "ping" {"pong"} else {"running"},
+                    "protocol_version":2,"pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
+                    "uptime_seconds":state.started.elapsed().as_secs(), "idle_timeout_seconds":state.idle_timeout,
+                    "session_idle_timeout_seconds":state.session_idle_timeout,
+                    "instances":details,"cached_sessions":instances.values().map(SessionPool::len).sum::<usize>(),
+                    "evaluations":state.requests.load(Ordering::Relaxed), "active_evaluations":state.active.load(Ordering::Relaxed)}))
+            }
             "stop" => Ok(json!({"status":"stopping"})),
-            "evaluate" => {
-                anyhow::ensure!(req["mode"] == json!(config::mode()), "Review mode does not match daemon mode");
-                state.requests.fetch_add(1, Ordering::Relaxed);
-                state.active.fetch_add(1, Ordering::Relaxed);
-                let evaluation = tokio::time::timeout(Duration::from_secs(24), async {
-                    let session = state.sessions.acquire(req["user_session_id"].as_str().filter(|id| !id.trim().is_empty()))?;
-                    Ok::<_, anyhow::Error>(session.evaluate(&req).await)
-                }).await;
-                let evaluation = match evaluation {
-                    Ok(Ok(assessment)) => assessment,
-                    Ok(Err(e)) => Assessment::deny(format!("Cannot acquire reviewer session: {e:#}")),
-                    Err(_) => Assessment::deny("Review deadline exceeded"),
-                };
-                if let Some(id) = req["request_id"].as_str() {
-                    audit::record(id, "daemon_result", json!({"assessment":evaluation}));
-                }
-                state.active.fetch_sub(1, Ordering::Relaxed);
-                *state.last_active.lock().await = Instant::now();
-                Ok(json!({"status":"ok", "assessment":evaluation}))
+            "reset" | "evaluate" => {
+                let context: crate::context::RequestContext = serde_json::from_value(req["context"].clone()).context("Missing or invalid request context")?;
+                context.validate()?;
+                crate::context::scope(Arc::new(context), async {
+                    let key = (config::mode().agent().to_owned(), config::instance());
+                    if req["action"] == "reset" {
+                        let mut instances = state.instances.lock().unwrap();
+                        let pool = instances.entry(key.clone()).or_insert_with(|| SessionPool::new(config::mode(), config::state_dir()));
+                        pool.reset()?;
+                        instances.remove(&key);
+                        return Ok(json!({"status":"reset", "agent":key.0, "instance":key.1}));
+                    }
+                    let session = {
+                        let mut instances = state.instances.lock().unwrap();
+                        instances.entry(key).or_insert_with(|| SessionPool::new(config::mode(), config::state_dir()))
+                            .acquire(req["user_session_id"].as_str().filter(|id| !id.trim().is_empty()))?
+                    };
+                    state.requests.fetch_add(1, Ordering::Relaxed);
+                    state.active.fetch_add(1, Ordering::Relaxed);
+                    let evaluation = tokio::select! {
+                        result = tokio::time::timeout(Duration::from_secs(24), session.evaluate(&req)) => match result {
+                            Ok(a) => a,
+                            Err(_) => Assessment::deny("Review deadline exceeded"),
+                        },
+                        _ = stream.read_u8() => Assessment::deny("Approval caller disconnected"),
+                    };
+                    if let Some(id) = req["request_id"].as_str() {
+                        audit::record(id, "daemon_result", json!({"assessment":evaluation}));
+                    }
+                    state.active.fetch_sub(1, Ordering::Relaxed);
+                    *state.last_active.lock().await = Instant::now();
+                    Ok(json!({"status":"ok", "assessment":evaluation}))
+                }).await
             }
             _ => Ok(json!({"status":"error", "message":"Unknown action"})),
         }
@@ -227,7 +213,7 @@ impl Drop for SocketCleanup {
         let _ = fs::remove_file(&self.0);
     }
 }
-pub async fn run(idle_timeout: u64) -> Result<()> {
+pub async fn run(idle_timeout: u64, session_idle_timeout: u64) -> Result<()> {
     let path = config::socket_path();
     let parent = path
         .parent()
@@ -256,13 +242,14 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
     let _cleanup = SocketCleanup(path.clone());
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600))?;
     let state = Arc::new(State {
-        sessions: SessionPool::new(config::mode(), config::state_dir()),
+        instances: std::sync::Mutex::new(std::collections::BTreeMap::new()),
         stop: Notify::new(),
         started: Instant::now(),
         last_active: Mutex::new(Instant::now()),
         requests: AtomicU64::new(0),
         active: AtomicU64::new(0),
         idle_timeout,
+        session_idle_timeout,
     });
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -276,12 +263,48 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
             _ = tokio::signal::ctrl_c() => break,
             _ = clients.join_next(), if !clients.is_empty() => {},
             _ = tick.tick() => {
-                state.sessions.prune(Duration::from_secs(300));
+                {
+                    let mut instances = state.instances.lock().unwrap();
+                    for pool in instances.values() { pool.prune(Duration::from_secs(session_idle_timeout)); }
+                    instances.retain(|_, pool| !pool.is_empty());
+                }
                 if idle_timeout > 0 && state.active.load(Ordering::Relaxed) == 0 && state.last_active.lock().await.elapsed().as_secs() >= idle_timeout { break; }
             }
         }
     }
     clients.abort_all();
     while clients.join_next().await.is_some() {}
+    drop(state);
+    crate::backend::reap_children().await;
     Ok(())
+}
+
+/// Compatibility alias for the single daemon status.
+pub async fn status_all() -> Result<Value> {
+    status(None, None).await
+}
+pub async fn status(agent: Option<config::Mode>, instance: Option<&str>) -> Result<Value> {
+    request(
+        &config::socket_path(),
+        &json!({"action":"status","agent":agent.map(|m| m.agent()),"instance":instance}),
+        1,
+    )
+    .await
+}
+pub async fn reset() -> Result<Value> {
+    start().await?;
+    let response = request(
+        &config::socket_path(),
+        &json!({"action":"reset", "context":crate::context::RequestContext::capture()?}),
+        3,
+    )
+    .await?;
+    anyhow::ensure!(
+        response["status"] == "reset",
+        "Instance reset failed: {}",
+        response["assessment"]["rationale"]
+            .as_str()
+            .unwrap_or("unexpected response")
+    );
+    Ok(response)
 }

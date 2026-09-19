@@ -1,4 +1,4 @@
 {
-  "name": "agy-auto-approve",
+  "name": "any-auto",
   "description": "Antigravity plugin for intelligent auto-approval with safety blacklists and read-only LLM guard evaluation."
 }

@@ -24,7 +24,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
-          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "agy-auto-approve") | .version')
+          version=$(cargo metadata --locked --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "any-auto") | .version')
           test "$RELEASE_TAG" = "v$version"
 
   build:
@@ -69,8 +69,8 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release --target "$RELEASE_TARGET" --locked
-          binary="target/$RELEASE_TARGET/release/agy-auto-approve"
-          test "$("$binary" --version)" = "agy-auto-approve ${RELEASE_TAG#v}"
+          binary="target/$RELEASE_TARGET/release/any-auto"
+          test "$("$binary" --version)" = "any-auto ${RELEASE_TAG#v}"
           if [ "$RUNNER_OS" = Linux ]; then
             # A musl target alone is insufficient if build flags accidentally enable dynamic linking.
             readelf -l "$binary" > program-headers.txt
@@ -81,8 +81,8 @@ jobs:
             fi
           fi
           mkdir -p dist
-          COPYFILE_DISABLE=1 tar -czf "dist/agy-auto-approve-$RELEASE_TAG-$RELEASE_TARGET.tar.gz" \
-            -C "target/$RELEASE_TARGET/release" agy-auto-approve
+          COPYFILE_DISABLE=1 tar -czf "dist/any-auto-$RELEASE_TAG-$RELEASE_TARGET.tar.gz" \
+            -C "target/$RELEASE_TARGET/release" any-auto
       - uses: actions/upload-artifact@v4
         with:
           name: binary-${{ matrix.target }}
@@ -131,7 +131,7 @@ jobs:
         run: |
           set -euo pipefail
           for target in x86_64-unknown-linux-musl aarch64-unknown-linux-musl x86_64-apple-darwin aarch64-apple-darwin; do
-            test -f "agy-auto-approve-$RELEASE_TAG-$target.tar.gz"
+            test -f "any-auto-$RELEASE_TAG-$target.tar.gz"
           done
           test "$(find . -maxdepth 1 -name '*.tar.gz' | wc -l)" -eq 4
           sha256sum ./*.tar.gz | sed 's|  ./|  |' > SHA256SUMS

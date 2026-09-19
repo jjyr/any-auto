@@ -7,6 +7,7 @@ use tokio::process::Command;
 
 pub struct AgyBackend {
     workspace: PathBuf,
+    config: ReviewerConfig,
 }
 
 impl Backend for AgyBackend {
@@ -17,7 +18,7 @@ impl Backend for AgyBackend {
                 config.prompt
             );
             let v = self
-                .turn(None, &prompt, config.cli_model.as_deref(), id)
+                .turn(None, &prompt, config.approver.model.as_deref(), id)
                 .await?;
             conversation_id(&v)
         })
@@ -44,8 +45,8 @@ impl Backend for AgyBackend {
 }
 
 impl AgyBackend {
-    pub fn new(workspace: PathBuf) -> Self {
-        Self { workspace }
+    pub fn new(workspace: PathBuf, config: ReviewerConfig) -> Self {
+        Self { workspace, config }
     }
     async fn turn(
         &self,
@@ -65,6 +66,9 @@ impl AgyBackend {
             "--mode",
             "plan",
         ];
+        if let Some(effort) = self.config.approver.effort.as_deref() {
+            args.extend(["--effort", effort]);
+        }
         if let Some(cid) = cid {
             args.extend(["--conversation", cid]);
         }
@@ -76,7 +80,7 @@ impl AgyBackend {
         let mut command = Command::new("agy");
         command
             .current_dir(cwd)
-            .env("AGY_AUTO_APPROVE_REVIEWER", "1")
+            .env("ANY_AUTO_REVIEWER", "1")
             .env_remove("ANTIGRAVITY_LS_ADDRESS")
             .env_remove("ANTIGRAVITY_CSRF_TOKEN");
         let state_path = self

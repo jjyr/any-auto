@@ -11,8 +11,8 @@ use std::{
     process::{Command, Stdio},
 };
 
-const RELEASES: &str = "https://github.com/jjyr/agy-auto-approve/releases";
-const NAME: &str = "agy-auto-approve";
+const RELEASES: &str = "https://github.com/jjyr/any-auto/releases";
+const NAME: &str = "any-auto";
 
 fn run(command: &mut Command) -> Result<()> {
     let status = command
@@ -135,7 +135,7 @@ fn installed_scope() -> Result<(bool, bool)> {
     let hooks = read_config(&base.join("hooks.json"))?;
     let desktop = read_config(&base.join("config.json"))?;
     let hook = &hooks[NAME];
-    let sidecar = &desktop["sidecars"]["agy-auto-approve/approver"];
+    let sidecar = &desktop["sidecars"]["any-auto/approver"];
     Ok((
         hook.is_object() && hook["enabled"] != false,
         sidecar.is_object() && sidecar["enabled"] != false,
@@ -237,6 +237,10 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     let version = version.map(stable_version).transpose()?;
     let executable = std::env::current_exe()?.canonicalize()?;
     let (cli, desktop) = installed_scope()?;
+    let pi_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".pi/agent"));
+    let pi = pi_dir.join("extensions/any-auto.ts").exists();
     if let Some((root, index)) = registry_source(&executable)? {
         println!("Updating Cargo registry installation");
         let mut cargo = Command::new("cargo");
@@ -252,9 +256,15 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     } else {
         release_update(&executable, version.as_deref())?;
     }
+    if pi {
+        run(Command::new(&executable).args(["install", "--pi"]))?;
+    }
     if cli || desktop {
         let mut install = Command::new(&executable);
         install.arg("install");
+        if cli && desktop {
+            install.args(["--agents", "agy-cli,agy-desktop"]);
+        }
         if !desktop {
             install.arg("--cli-only");
         }
@@ -264,22 +274,15 @@ pub async fn update(version: Option<&str>) -> Result<()> {
         run(&mut install).context(
             "Binary upgraded, but plugin configuration refresh failed; run install to retry",
         )?;
-    } else {
-        println!("No enabled plugin found. Run `agy-auto-approve install` to enable it.");
+    } else if !pi {
+        println!("No enabled plugin found. Run `any-auto install` to enable it.");
     }
-    for mode in [config::Mode::Cli, config::Mode::Sidecar] {
-        if let Ok(status) = daemon::request(
-            &config::socket_path_for(mode),
-            &json!({"action":"status"}),
-            1,
-        )
-        .await
-            && status["status"] == "running"
-        {
-            run(Command::new(&executable).args(["daemon", "stop", "--mode", mode.as_str()]))
-                .context("Upgrade completed, but the old daemon could not be stopped")?;
-            println!("CLI will start the new daemon on its next review request.");
-        }
+    if let Ok(status) = daemon::status(None, None).await
+        && status["status"] == "running"
+    {
+        run(Command::new(&executable).args(["daemon", "stop"]))
+            .context("Upgrade completed, but the old daemon could not be stopped")?;
+        println!("The shared daemon will start on the next review request.");
     }
     if desktop {
         println!("Restart Antigravity Desktop to load the updated sidecar.");

@@ -20,12 +20,27 @@ pub(super) async fn call_with_usage(
     id: &str,
     usage: impl FnOnce(&str) -> Option<crate::usage::Tokens>,
 ) -> Result<String> {
+    crate::context::apply(&mut command);
+    if program == "agy" {
+        for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("ANTIGRAVITY_")) {
+            command.env_remove(key);
+        }
+        if let Some(c) = crate::context::current() {
+            for key in c
+                .environment
+                .keys()
+                .filter(|k| k.starts_with("ANTIGRAVITY_"))
+            {
+                command.env_remove(key);
+            }
+        }
+    }
     let started = std::time::Instant::now();
     let path = config::backend_path().context("Cannot construct backend search PATH")?;
     let operation = args.first().copied().unwrap_or("unknown");
     audit::record(
         id,
-        &format!("{program}_request"),
+        "backend_request",
         json!({"command":program, "args":args, "operation":operation,
                 "daemon_pid":std::process::id(),
                 "search_path":std::env::split_paths(&path).collect::<Vec<_>>(),
@@ -59,7 +74,7 @@ pub(super) async fn call_with_usage(
             };
             audit::record(
                 id,
-                &format!("{program}_error"),
+                "backend_error",
                 json!({"error":message,"stage":stage,"operation":operation,"duration_ms":started.elapsed().as_millis()}),
             );
             bail!("{message}");
@@ -73,7 +88,7 @@ pub(super) async fn call_with_usage(
     };
     audit::record(
         id,
-        &format!("{program}_response"),
+        "backend_response",
         json!({"stdout":raw, "usage_delta":usage_delta,
             "stderr":String::from_utf8_lossy(&output.stderr), "exit_code":output.status.code(),
             "duration_ms":started.elapsed().as_millis()}),

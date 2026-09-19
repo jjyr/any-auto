@@ -1,0 +1,156 @@
+use crate::{audit, config, install, stats};
+use anyhow::Result;
+use dialoguer::{Confirm, Input, Select};
+use std::io::IsTerminal;
+
+pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
+    if !Confirm::new()
+        .with_prompt("Customize approver settings?")
+        .default(false)
+        .interact()?
+    {
+        return Ok(None);
+    }
+    let text = match std::fs::read_to_string(config::config_path()) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    let mut doc: toml_edit::DocumentMut = text.parse()?;
+    for agent in agents {
+        println!(
+            "Configure {} (environment overrides still take precedence)",
+            agent.agent()
+        );
+        let providers = ["Keep existing/default", "pi", "cli", "openai", "agentapi"];
+        let Some(choice) = Select::new()
+            .with_prompt("Approver backend")
+            .items(&providers)
+            .default(0)
+            .interact_opt()?
+        else {
+            return Ok(None);
+        };
+        if choice == 0 {
+            continue;
+        }
+        let provider = providers[choice];
+        let model: String = Input::new()
+            .with_prompt("Model (blank: backend default; OpenAI requires a model)")
+            .allow_empty(true)
+            .interact_text()?;
+        let levels: &[&str] = match provider {
+            "pi" => &[
+                "default", "off", "minimal", "low", "medium", "high", "xhigh", "max",
+            ],
+            "cli" => &["default", "low", "medium", "high"],
+            "openai" => &[
+                "default", "none", "minimal", "low", "medium", "high", "xhigh", "max",
+            ],
+            _ => &["default"],
+        };
+        let effort = if levels.len() > 1 {
+            println!("Model-specific effort capability will be validated during review.");
+            let Some(i) = Select::new()
+                .with_prompt("Effort")
+                .items(levels)
+                .default(0)
+                .interact_opt()?
+            else {
+                return Ok(None);
+            };
+            levels[i]
+        } else {
+            "default"
+        };
+        let mut settings = toml_edit::Table::new();
+        settings["provider"] = toml_edit::value(provider);
+        // Explicit empty overrides prevent inheriting common model/effort.
+        settings["model"] = toml_edit::value(model);
+        settings["effort"] = toml_edit::value(if effort == "default" { "" } else { effort });
+        if provider == "openai" {
+            let url: String = Input::new()
+                .with_prompt("Responses API base URL")
+                .default("https://api.openai.com/v1".into())
+                .interact_text()?;
+            let key: String = Input::new()
+                .with_prompt("API key environment variable name (not the secret)")
+                .default("OPENAI_API_KEY".into())
+                .interact_text()?;
+            settings["base_url"] = toml_edit::value(url);
+            settings["api_key_env"] = toml_edit::value(key);
+        }
+        if doc.get("agents").is_none() {
+            doc["agents"] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        if doc["agents"].get(agent.agent()).is_none() {
+            doc["agents"][agent.agent()] = toml_edit::Item::Table(toml_edit::Table::new());
+        }
+        doc["agents"][agent.agent()]["approver"] = toml_edit::Item::Table(settings);
+    }
+    let proposed = doc.to_string();
+    if proposed == text {
+        return Ok(None);
+    }
+    let text = proposed;
+    config::validate_text(&text)?;
+    println!(
+        "Proposed configuration: {}\n{}",
+        config::config_path().display(),
+        text
+    );
+    Ok(Some(text))
+}
+pub fn run() -> Result<()> {
+    anyhow::ensure!(
+        std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
+        "TUI requires a terminal. Use --help or a subcommand."
+    );
+    loop {
+        let Some(choice) = Select::new()
+            .with_prompt("any-auto")
+            .items(&[
+                "Agent readiness",
+                "Install integrations",
+                "Configure approvers",
+                "Logs",
+                "Statistics",
+                "Exit",
+            ])
+            .default(0)
+            .interact_opt()?
+        else {
+            return Ok(());
+        };
+        let result = match choice {
+            0 => install::doctor(),
+            1 => install::wizard(),
+            2 => configure(),
+            3 => audit::print_list(
+                &audit::Filter {
+                    limit: 20,
+                    group_by: Some(audit::Group::Agent),
+                    ..Default::default()
+                },
+                false,
+            ),
+            4 => stats::print(None, None, None, Some(audit::Group::Agent)),
+            _ => return Ok(()),
+        };
+        if let Err(e) = result {
+            eprintln!("{e:#}");
+        }
+    }
+}
+fn configure() -> Result<()> {
+    if let Some(text) =
+        stage_settings(&[config::Mode::Cli, config::Mode::Sidecar, config::Mode::Pi])?
+        && Confirm::new()
+            .with_prompt("Save configuration?")
+            .default(false)
+            .interact()?
+    {
+        config::save_text(&text)?;
+    }
+    Ok(())
+}

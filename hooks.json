@@ -1,9 +1,0 @@
-{
-  "agy-auto-approve": {
-    "enabled": true,
-    "PreToolUse": [{
-      "matcher": "*",
-      "hooks": [{"type": "command", "command": "agy-auto-approve hook", "timeout": 30}]
-    }]
-  }
-}

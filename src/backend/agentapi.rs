@@ -9,7 +9,11 @@ pub struct AgentApiBackend;
 impl Backend for AgentApiBackend {
     fn create_session<'a>(&'a self, config: &'a ReviewerConfig, id: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
-            let model = config.model.as_ref().map(|m| format!("--model={m}"));
+            let model = config
+                .approver
+                .model
+                .as_ref()
+                .map(|m| format!("--model={m}"));
             let mut args = vec!["new-conversation", "--title=Guardian Approver Session"];
             if let Some(model) = &model {
                 args.push(model);

@@ -27,7 +27,7 @@ pub fn request_id() -> String {
 }
 pub fn record(id: &str, event: &str, data: Value) {
     if let Err(error) = append(id, event, data) {
-        eprintln!("agy-auto-approve: unable to write approval history: {error}");
+        eprintln!("any-auto: unable to write approval history: {error}");
     }
 }
 fn append(id: &str, event: &str, data: Value) -> Result<()> {
@@ -42,7 +42,17 @@ fn append(id: &str, event: &str, data: Value) -> Result<()> {
     file.set_permissions(fs::Permissions::from_mode(0o600))?;
     // One line per event, even when multiple hook processes and the daemon write together.
     file.lock_exclusive()?;
-    let entry = json!({"schema_version":2, "id":id, "timestamp":now.to_rfc3339(),
+    let settings = config::reviewer_config().ok().map(|c| c.approver);
+    let reviewer = if data["reviewer"].is_object() {
+        data["reviewer"].clone()
+    } else {
+        json!({"provider":settings.as_ref().map(|c| c.provider),"model":settings.as_ref().and_then(|c| c.model.as_ref()),"effort_requested":settings.as_ref().and_then(|c| c.effort.as_ref())})
+    };
+    let entry = json!({"schema_version":3,
+        "agent":config::mode().agent(), "instance":config::instance(),
+        "provider":reviewer["provider"],
+        "model":reviewer["model"],
+        "effort_requested":reviewer["effort_requested"], "id":id, "timestamp":now.to_rfc3339(),
         "mode":config::mode(), "event":event, "data":data});
     writeln!(file, "{entry}")?;
     Ok(())
@@ -53,6 +63,42 @@ pub struct Filter {
     pub decision: Option<String>,
     pub tool: Option<String>,
     pub conversation: Option<String>,
+    pub agent: Option<String>,
+    pub provider: Option<String>,
+    pub instance: Option<String>,
+    pub group_by: Option<Group>,
+}
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+pub enum Group {
+    Agent,
+    Provider,
+    Model,
+    Effort,
+    Session,
+    Instance,
+}
+impl Group {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Agent => "agent",
+            Self::Provider => "provider",
+            Self::Model => "model",
+            Self::Effort => "effort_requested",
+            Self::Session => "conversation_id",
+            Self::Instance => "instance",
+        }
+    }
+}
+pub fn safe_text(text: &str) -> String {
+    text.chars()
+        .flat_map(|c| {
+            if c.is_control() {
+                c.escape_default().collect::<Vec<_>>()
+            } else {
+                vec![c]
+            }
+        })
+        .collect()
 }
 pub fn daily_path(dir: &Path, date: chrono::NaiveDate) -> PathBuf {
     dir.join(format!("approvals-{date}.jsonl"))
@@ -132,22 +178,45 @@ fn events(visit: impl FnMut(Value)) -> Result<()> {
     )
 }
 pub fn list(filter: &Filter) -> Result<Vec<Value>> {
-    let mut records = VecDeque::new();
+    let mut groups: BTreeMap<String, VecDeque<Value>> = BTreeMap::new();
     events(|entry| {
         if let Some(record) = summary(&entry, filter) {
+            let key = if matches!(filter.group_by, Some(Group::Agent)) {
+                record["agent"].as_str().unwrap_or("unknown").to_owned()
+            } else {
+                String::new()
+            };
+            let records = groups.entry(key).or_default();
             records.push_back(record);
             if records.len() > filter.limit {
                 records.pop_front();
             }
         }
     })?;
-    Ok(records.into_iter().rev().collect())
+    let mut records: Vec<Value> = groups
+        .into_values()
+        .flat_map(|records| records.into_iter().rev())
+        .collect();
+    records.sort_by(|a, b| b["timestamp"].as_str().cmp(&a["timestamp"].as_str()));
+    Ok(records)
 }
 fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
     if entry["event"] != "hook_result" {
         return None;
     }
     let d = &entry["data"];
+    if filter.agent.as_deref().is_some_and(|v| entry["agent"] != v)
+        || filter
+            .provider
+            .as_deref()
+            .is_some_and(|v| entry["provider"] != v)
+        || filter
+            .instance
+            .as_deref()
+            .is_some_and(|v| entry["instance"] != v)
+    {
+        return None;
+    }
     if filter
         .decision
         .as_deref()
@@ -161,6 +230,7 @@ fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
         return None;
     }
     Some(json!({"id":entry["id"], "timestamp":entry["timestamp"],
+            "agent":entry["agent"], "provider":entry["provider"], "model":entry["model"], "effort_requested":entry["effort_requested"], "instance":entry["instance"],
             "mode":entry["mode"], "tool":d["tool"], "conversation_id":d["conversation_id"], "decision":d["output"]["decision"],
             "command":d["command"], "cwd":d["cwd"],
             "reason":d["output"]["reason"], "stage":d["stage"], "duration_ms":d["duration_ms"]}))
@@ -179,7 +249,30 @@ pub fn show(id: &str) -> Result<Value> {
 }
 pub fn print_list(filter: &Filter, json_output: bool) -> Result<()> {
     let records = list(filter)?;
-    if json_output {
+    if let Some(group) = filter.group_by {
+        let mut groups: BTreeMap<String, Vec<Value>> = BTreeMap::new();
+        for record in records {
+            groups
+                .entry(
+                    record[group.key()]
+                        .as_str()
+                        .unwrap_or("default/unknown")
+                        .into(),
+                )
+                .or_default()
+                .push(record);
+        }
+        if json_output {
+            println!("{}", serde_json::to_string_pretty(&groups)?);
+        } else {
+            for (label, records) in groups {
+                println!("{}: {}", group.key(), safe_text(&label));
+                for record in records {
+                    print_record(&record, false);
+                }
+            }
+        }
+    } else if json_output {
         println!("{}", serde_json::to_string_pretty(&records)?);
     } else if records.is_empty() {
         println!("No approval logs found.");
@@ -210,13 +303,14 @@ fn print_record(record: &Value, json_output: bool) {
                 .collect()
         };
         println!(
-            "{}  {}  {:9}  {}  stage={} mode={}\n  {}",
+            "{}  {}  {:9}  {}  stage={} agent={} provider={}\n  {}",
             text("timestamp"),
             text("id"),
             text("decision"),
             text("tool"),
             text("stage"),
-            text("mode"),
+            text("agent"),
+            text("provider"),
             text("reason")
         );
         for key in ["command", "cwd"] {

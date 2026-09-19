@@ -8,14 +8,16 @@ to GitHub Releases.
 
 ## One-time crates.io setup
 
-The crate already exists on crates.io. As a crate owner, open
-[its settings](https://crates.io/crates/agy-auto-approve/settings), find
+The `any-auto` package has its own crates.io identity. If it has not been published
+yet, publish its initial version using an authorized crates.io token before setting
+up trusted publishing. Once you own the crate, open
+[its settings](https://crates.io/crates/any-auto/settings), find
 **Trusted Publishing**, and add a **GitHub** publisher with these exact values:
 
 | Field | Value |
 | --- | --- |
 | Repository owner | `jjyr` |
-| Repository name | `agy-auto-approve` |
+| Repository name | `any-auto` |
 | Workflow filename | `release.yml` |
 | Environment | Leave empty (the publishing job does not use an environment) |
 

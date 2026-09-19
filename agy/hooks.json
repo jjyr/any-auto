@@ -1,0 +1,9 @@
+{
+  "any-auto": {
+    "enabled": true,
+    "PreToolUse": [{
+      "matcher": "*",
+      "hooks": [{"type": "command", "command": "any-auto hook", "timeout": 30}]
+    }]
+  }
+}

@@ -3,7 +3,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
 const VERSION: &str = "v0.3.0";
 const BINARY: &str = r#"#!/bin/sh
 case "$1" in
-  --version) echo 'agy-auto-approve 0.3.0';;
+  --version) echo 'any-auto 0.3.0';;
   install) printf '%s\n' "$*" >> "$HOME/registered";;
   *) exit 1;;
 esac
@@ -22,8 +22,8 @@ impl Fixture {
         for name in ["bin", "assets", "payload", "home", "scratch"] {
             fs::create_dir(dir.path().join(name)).unwrap();
         }
-        executable(&dir.path().join("payload/agy-auto-approve"), BINARY);
-        let asset = format!("agy-auto-approve-{VERSION}-{target}.tar.gz");
+        executable(&dir.path().join("payload/any-auto"), BINARY);
+        let asset = format!("any-auto-{VERSION}-{target}.tar.gz");
         assert!(
             Command::new("tar")
                 .env("COPYFILE_DISABLE", "1")
@@ -31,7 +31,7 @@ impl Fixture {
                 .arg(dir.path().join("assets").join(&asset))
                 .arg("-C")
                 .arg(dir.path().join("payload"))
-                .arg("agy-auto-approve")
+                .arg("any-auto")
                 .status()
                 .unwrap()
                 .success()
@@ -70,9 +70,9 @@ while [ "$#" -gt 0 ]; do
   esac
 done
 case "$url" in
-  https://github.com/jjyr/agy-auto-approve/releases/latest)
-    printf 'https://github.com/jjyr/agy-auto-approve/releases/tag/%s' "${LATEST_TAG:-v0.3.0}";;
-  https://github.com/jjyr/agy-auto-approve/releases/download/*)
+  https://github.com/jjyr/any-auto/releases/latest)
+    printf 'https://github.com/jjyr/any-auto/releases/tag/%s' "${LATEST_TAG:-v0.3.0}";;
+  https://github.com/jjyr/any-auto/releases/download/*)
     [ "${FAIL_DOWNLOAD:-0}" != 1 ] || exit 22
     cp "$ASSET_DIR/${url##*/}" "$output";;
   *) exit 22;;
@@ -84,8 +84,8 @@ esac
         // implementations can briefly expose a writable descriptor to concurrent
         // child spawns, causing Linux exec to fail with ETXTBSY (Text file busy).
         {
-            let mut source = fs::File::open(env!("CARGO_BIN_EXE_agy-auto-approve")).unwrap();
-            let destination = dir.path().join("home/.local/bin/agy-auto-approve");
+            let mut source = fs::File::open(env!("CARGO_BIN_EXE_any-auto")).unwrap();
+            let destination = dir.path().join("home/.local/bin/any-auto");
             let mut target = fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -102,9 +102,12 @@ esac
         let mut c = Command::new(self.installed());
         c.arg("update")
             .env("HOME", self.dir.path().join("home"))
-            .env("AGY_APPROVER_SOCKET", self.dir.path().join("approver.sock"))
-            .env("AGY_APPROVER_STATE_DIR", self.dir.path().join("state"))
-            .env("AGY_AUTO_APPROVE_LOG_DIR", self.dir.path().join("logs"))
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_RUNTIME_DIR")
+            .env("ANY_AUTO_SOCKET", self.dir.path().join("approver.sock"))
+            .env("ANY_AUTO_STATE_DIR", self.dir.path().join("state"))
+            .env("ANY_AUTO_LOG_DIR", self.dir.path().join("logs"))
             .env("TMPDIR", self.dir.path().join("scratch"))
             .env(
                 "PATH",
@@ -123,7 +126,7 @@ esac
         command.args(flags).output().unwrap()
     }
     fn installed(&self) -> std::path::PathBuf {
-        self.dir.path().join("home/.local/bin/agy-auto-approve")
+        self.dir.path().join("home/.local/bin/any-auto")
     }
     fn assert_clean(&self) {
         assert_eq!(
@@ -155,6 +158,9 @@ fn release_update_resolves_latest_and_preserves_cli_scope() {
             .arg("install")
             .arg("--cli-only")
             .env("HOME", f.dir.path().join("home"))
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_RUNTIME_DIR")
             .status()
             .unwrap()
             .success()
@@ -255,7 +261,7 @@ fn failed_release_preserves_binary() {
 fn registry_installation_uses_cargo_and_original_root() {
     let f = fixture();
     let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
-    fs::write(root.join(".crates2.json"), r#"{"installs":{"agy-auto-approve 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["agy-auto-approve"]}}}"#).unwrap();
+    fs::write(root.join(".crates2.json"), r#"{"installs":{"any-auto 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["any-auto"]}}}"#).unwrap();
     executable(
         &f.dir.path().join("bin/cargo"),
         "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/cargo-args\"\n",
@@ -267,7 +273,7 @@ fn registry_installation_uses_cargo_and_original_root() {
         String::from_utf8_lossy(&out.stderr)
     );
     let args = fs::read_to_string(f.dir.path().join("home/cargo-args")).unwrap();
-    assert!(args.contains("install\nagy-auto-approve\n"));
+    assert!(args.contains("install\nany-auto\n"));
     assert!(args.contains(&format!(
         "--root\n{}\n",
         root.canonicalize().unwrap().display()
@@ -291,11 +297,11 @@ fn disabled_cli_is_preserved_when_updating_desktop() {
     let f = fixture();
     let base = f.dir.path().join("home/.gemini/config");
     fs::create_dir_all(&base).unwrap();
-    let hooks = r#"{"agy-auto-approve":{"enabled":false},"other":{"enabled":true}}"#;
+    let hooks = r#"{"any-auto":{"enabled":false},"other":{"enabled":true}}"#;
     fs::write(base.join("hooks.json"), hooks).unwrap();
     fs::write(
         base.join("config.json"),
-        r#"{"sidecars":{"agy-auto-approve/approver":{"enabled":true}}}"#,
+        r#"{"sidecars":{"any-auto/approver":{"enabled":true}}}"#,
     )
     .unwrap();
     let out = f.run(f.command(), &[]);
@@ -315,7 +321,7 @@ fn disabled_cli_is_preserved_when_updating_desktop() {
 fn cargo_failure_does_not_fall_back_to_release_or_refresh_configuration() {
     let f = fixture();
     let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
-    fs::write(root.join(".crates2.json"), r#"{"installs":{"agy-auto-approve 0.4.2 (registry+https://example.com/index)":{"bins":["agy-auto-approve"]}}}"#).unwrap();
+    fs::write(root.join(".crates2.json"), r#"{"installs":{"any-auto 0.4.2 (registry+https://example.com/index)":{"bins":["any-auto"]}}}"#).unwrap();
     executable(&f.dir.path().join("bin/cargo"), "#!/bin/sh\nexit 1\n");
     let previous = fs::read(f.installed()).unwrap();
     assert!(!f.run(f.command(), &[]).status.success());
@@ -346,17 +352,31 @@ fn unrelated_cargo_metadata_does_not_select_registry_update() {
 fn successful_update_stops_existing_daemon() {
     let f = fixture();
     let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
-    fs::write(root.join(".crates2.json"), r#"{"installs":{"agy-auto-approve 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["agy-auto-approve"]}}}"#).unwrap();
+    fs::write(root.join(".crates2.json"), r#"{"installs":{"any-auto 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["any-auto"]}}}"#).unwrap();
     executable(&f.dir.path().join("bin/cargo"), "#!/bin/sh\nexit 0\n");
-    let mut daemons: Vec<_> = ["cli", "sidecar"]
+    let mut daemons: Vec<_> = ["cli"]
         .into_iter()
         .map(|mode| {
             Command::new(f.installed())
-                .args(["daemon", "run", "--mode", mode, "--idle-timeout", "30"])
+                .args([
+                    "daemon",
+                    "run",
+                    "--agent",
+                    match mode {
+                        "cli" => "agy-cli",
+                        "sidecar" => "agy-desktop",
+                        other => other,
+                    },
+                    "--idle-timeout",
+                    "30",
+                ])
                 .env("HOME", f.dir.path().join("home"))
-                .env("AGY_APPROVER_SOCKET", f.dir.path().join("approver.sock"))
-                .env("AGY_APPROVER_STATE_DIR", f.dir.path().join("state"))
-                .env("AGY_AUTO_APPROVE_LOG_DIR", f.dir.path().join("logs"))
+                .env_remove("XDG_CONFIG_HOME")
+                .env_remove("XDG_DATA_HOME")
+                .env_remove("XDG_RUNTIME_DIR")
+                .env("ANY_AUTO_SOCKET", f.dir.path().join("approver.sock"))
+                .env("ANY_AUTO_STATE_DIR", f.dir.path().join("state"))
+                .env("ANY_AUTO_LOG_DIR", f.dir.path().join("logs"))
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .spawn()
@@ -364,18 +384,13 @@ fn successful_update_stops_existing_daemon() {
         })
         .collect();
     for _ in 0..100 {
-        if ["cli", "sidecar"]
-            .iter()
-            .all(|mode| f.dir.path().join(format!("approver-{mode}.sock")).exists())
-        {
+        if f.dir.path().join("approver.sock").exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let out = f.run(f.command(), &[]);
-    let stopped = ["cli", "sidecar"]
-        .iter()
-        .all(|mode| !f.dir.path().join(format!("approver-{mode}.sock")).exists());
+    let stopped = !f.dir.path().join("approver.sock").exists();
     for daemon in &mut daemons {
         let _ = daemon.kill();
         let _ = daemon.wait();
@@ -385,6 +400,6 @@ fn successful_update_stops_existing_daemon() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("CLI will start the new daemon"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("The shared daemon will start"));
     assert!(stopped);
 }
