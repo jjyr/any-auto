@@ -20,6 +20,21 @@ pub(super) async fn call_with_usage(
     id: &str,
     usage: impl FnOnce(&str) -> Option<crate::usage::Tokens>,
 ) -> Result<String> {
+    crate::context::apply(&mut command);
+    if program == "agy" {
+        for (key, _) in std::env::vars().filter(|(k, _)| k.starts_with("ANTIGRAVITY_")) {
+            command.env_remove(key);
+        }
+        if let Some(c) = crate::context::current() {
+            for key in c
+                .environment
+                .keys()
+                .filter(|k| k.starts_with("ANTIGRAVITY_"))
+            {
+                command.env_remove(key);
+            }
+        }
+    }
     let started = std::time::Instant::now();
     let path = config::backend_path().context("Cannot construct backend search PATH")?;
     let operation = args.first().copied().unwrap_or("unknown");

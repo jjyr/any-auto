@@ -3,17 +3,17 @@
 Automatic approval for Antigravity CLI/Desktop and Pi. A shared Rust approval
 pipeline supports agy CLI, agentapi, persistent Pi RPC, and OpenAI Responses
 reviewers. Defaults need no configuration: agy uses its existing backend and Pi
-uses a separate, tool-disabled Pi RPC session. Each host has independent daemons
-and sessions; logs and statistics can be grouped across them.
+uses a separate, tool-disabled Pi RPC session. One daemon serves all agents and instances with isolated reviewer
+sessions; logs and statistics can be grouped across them.
 
-| Host | Default approver backend |
+| Agent | Default approver backend |
 | --- | --- |
 | Antigravity CLI | `cli` (agy CLI) |
 | Antigravity Desktop | `agentapi` |
 | Pi | `pi` (persistent RPC) |
 
-The host is where approval requests originate. The approver backend decides them;
-it can differ from the host. Pi's model provider (such as Anthropic) is a separate
+The agent is where approval requests originate. The approver backend decides them;
+it can differ from the agent. Pi's model provider (such as Anthropic) is a separate
 choice encoded in the model ID.
 
 ## How it works
@@ -40,9 +40,11 @@ Antigravity CLI / Desktop / Pi
      Error or timeout -----------------> Deny
 ```
 
-Each daemon reuses a separate reviewer session for each user conversation, allowing the model service
+The daemon maintains a separate reviewer session for each user conversation, allowing the model service
 to reuse KV/prompt caches for shared context. Cache hits can reduce repeated
 processing and input-token costs, depending on the provider's caching and pricing.
+Idle sessions leave memory after five minutes; Pi RPC children are terminated and reaped.
+The next request restores persisted state. Each Pi session owns its own RPC process.
 Repeated AI-review denials trip the circuit breaker, requiring user review on
 subsequent requests. Decisions and reasons are logged locally. See the
 [pipeline details](docs/sidecars.md).
@@ -73,12 +75,12 @@ Or install from crates.io (requires Rust/Cargo and a C compiler):
 cargo install agy-auto-approve --locked
 ```
 
-Then select host integrations in the terminal wizard:
+Then select agent integrations in the terminal wizard:
 
 ```bash
 agy-auto-approve install
 # Scripts: agy-auto-approve install --auto
-# Explicit selection: agy-auto-approve install --hosts agy-cli,pi
+# Explicit selection: agy-auto-approve install --agents agy-cli,pi
 ```
 
 For Pi (0.84.2 or newer):
@@ -93,7 +95,7 @@ See the [Pi extension/RPC research](docs/pi-research.md),
 
 ## Terminal menu
 
-Run `agy-auto-approve` without arguments to open host readiness, installation,
+Run `agy-auto-approve` without arguments to open agent readiness, installation,
 configuration, logs and statistics. Explicit subcommands stay noninteractive,
 except bare `install`, which opens its installation wizard.
 Run `agy-auto-approve doctor` for local readiness checks without model requests.
@@ -101,36 +103,36 @@ Run `agy-auto-approve doctor` for local readiness checks without model requests.
 ## Configuration
 
 ```bash
-agy-auto-approve config --host pi        # View effective Pi reviewer settings
-agy-auto-approve config --edit           # Edit common and per-host reviewer settings
-agy-auto-approve daemon restart --host pi       # Restart Pi reviewer sessions
-agy-auto-approve daemon status --all            # Inspect all daemon instances
+agy-auto-approve config --agent pi        # View effective Pi reviewer settings
+agy-auto-approve config --edit           # Edit common and per-agent reviewer settings
+agy-auto-approve daemon reset --agent pi         # Reset Pi reviewer sessions
+agy-auto-approve daemon status                  # Shared daemon and cached instances
 ```
 
-Settings support common defaults, per-host overrides, and environment overrides. See the
+Settings support common defaults, per-agent overrides, and environment overrides. See the
 [configuration reference](docs/configuration.md) for provider, model, effort, and configuration precedence.
 
 Default configuration: `~/.config/agy-auto-approve/config.toml`. No file is needed.
-Use a common override or select a host:
+Use a common override or select a agent:
 
 ```toml
-[hosts.pi.approver]
+[agents.pi.approver]
 provider = "pi"
 model = "anthropic/claude-sonnet-4-5" # Example; must be available in your account
 effort = "low"
 ```
 
-`config` shows all hosts and setting sources. Legacy configuration is not read.
+`config` shows all agents and setting sources. Legacy configuration is not read.
 Logs/stats and sessions start fresh; see [configuration and directory details](docs/configuration.md#overview-tui-and-directories).
 
 ## Commands
 
-For all commands and options, see the [command reference](docs/commands.md). For more details, see the [multi-host architecture](docs/architecture.md) and [sidecar documentation](docs/sidecars.md).
+For all commands and options, see the [command reference](docs/commands.md). For more details, see the [multi-agent architecture](docs/architecture.md) and [sidecar documentation](docs/sidecars.md).
 
 ### Logs
 
 ```bash
-agy-auto-approve logs                     # Recent approvals grouped by host
+agy-auto-approve logs                     # Recent approvals grouped by agent
 agy-auto-approve logs --no-group          # Merged timeline
 agy-auto-approve logs -f                  # Follow new approvals
 agy-auto-approve logs --decision deny     # Show denied approvals
@@ -139,42 +141,75 @@ agy-auto-approve logs show APPROVAL_ID    # Show the full approval record
 
 Logs are stored in `~/.local/share/agy-auto-approve/logs` and can be read without a running daemon.
 
-Example output (`agy-auto-approve logs --limit 2`, illustrative data):
+Example output (`agy-auto-approve logs --limit 2`, rendered by the CLI from illustrative records;
+the limit applies to each agent):
 
 ```text
-host: agy-cli
-2026-09-18T04:22:07.302579+00:00  18c4a1-12ab-0  allow      run_command  stage=reviewer host=agy-cli provider=cli
+agent: agy-cli
+2026-09-19T13:11:47+00:00  18c4a2-12ab-0  allow      view_file  stage=whitelist agent=agy-cli provider=cli
+  [agy-auto-approve: ALLOWED] Read-only tool.
+2026-09-19T12:11:47+00:00  18c4a1-12ab-0  allow      run_command  stage=reviewer agent=agy-cli provider=cli
   [agy-auto-approve: ALLOWED] Requested local validation is low risk.
   command: cargo test
   cwd: /workspace/my-project
-2026-09-15T04:22:07.302579+00:00  18c3b2-12ab-0  allow      run_command  stage=reviewer host=agy-cli provider=cli
-  [agy-auto-approve: ALLOWED] Requested local validation is low risk.
+agent: pi
+2026-09-16T14:11:47+00:00  18c3b2-34cd-0  ask        bash  stage=reviewer agent=pi provider=pi
+  [agy-auto-approve: ASK] Confirm publishing this package.
+  command: npm publish
+  cwd: /workspace/my-project
+2026-09-07T14:11:47+00:00  18c2c3-34cd-0  allow      bash  stage=reviewer agent=pi provider=pi
+  [agy-auto-approve: ALLOWED] Requested local build is low risk.
   command: cargo build --release
   cwd: /workspace/my-project
 ```
 
 ### Approval statistics
 
-Run `agy-auto-approve stats` for tables grouped by host plus a total of input/output tokens and approval time
-(totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--host pi`, `--provider pi`, or `--group-by model` to select a view;
+Run `agy-auto-approve stats` for tables grouped by agent plus a total of input/output tokens and approval time
+(totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
 there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
 reviews. A separate outcomes table includes rules, errors and human confirmations; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
-Example output (illustrative data):
-
-```bash
-agy-auto-approve stats --no-group
-```
+Example output (`agy-auto-approve stats`, rendered by the CLI from the same illustrative records):
 
 ```text
+agent: agy-cli
 ┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
 │ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
 ├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
 │ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 7 days   │         2 │        5,600 │           620 │       2.4s │     2,800 │        310 │     1.2s │
-│ Last 30 days  │         3 │        8,700 │           920 │       4.2s │     2,900 │        307 │     1.4s │
+│ Last 7 days   │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
+│ Last 30 days  │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
 └───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
+agent: pi
+┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
+│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
+├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
+│ Last 24 hours │         0 │            0 │             0 │       0.0s │         — │          — │        — │
+│ Last 7 days   │         1 │        1,800 │           240 │       1.4s │     1,800 │        240 │     1.4s │
+│ Last 30 days  │         2 │        3,900 │           500 │       2.6s │     1,950 │        250 │     1.3s │
+└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
+Total
+┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
+│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
+├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
+│ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
+│ Last 7 days   │         2 │        4,500 │           560 │       2.4s │     2,250 │        280 │     1.2s │
+│ Last 30 days  │         3 │        6,600 │           820 │       3.6s │     2,200 │        273 │     1.2s │
+└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
+Outcomes (human confirmations are separate events, not additional reviews)
+Group | Outcome | 24h | 7d | 30d
+Total | human_allow | 0 | 1 | 1
+Total | reviewer:allow | 1 | 1 | 2
+Total | reviewer:ask | 0 | 1 | 1
+Total | whitelist:allow | 1 | 1 | 1
+agy-cli | reviewer:allow | 1 | 1 | 1
+agy-cli | whitelist:allow | 1 | 1 | 1
+pi | human_allow | 0 | 1 | 1
+pi | reviewer:allow | 0 | 0 | 1
+pi | reviewer:ask | 0 | 1 | 1
+Usage above covers completed model reviews, not total provider billing.
 ```
 
 ## Releasing

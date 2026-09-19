@@ -6,12 +6,12 @@ use std::{
     process::{Command, Stdio},
 };
 
-struct Host {
+struct Agent {
     root: tempfile::TempDir,
 }
-impl Host {
+impl Agent {
     fn new() -> Self {
-        let host = Self {
+        let agent = Self {
             root: tempfile::tempdir_in("/tmp").unwrap(),
         };
         let script = r#"#!/bin/sh
@@ -38,13 +38,13 @@ while IFS= read -r line; do
  esac
 done
 "#;
-        fs::write(host.root.path().join("pi"), script).unwrap();
+        fs::write(agent.root.path().join("pi"), script).unwrap();
         fs::set_permissions(
-            host.root.path().join("pi"),
+            agent.root.path().join("pi"),
             fs::Permissions::from_mode(0o755),
         )
         .unwrap();
-        host
+        agent
     }
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
@@ -73,9 +73,12 @@ done
         String::from_utf8(out.stdout).unwrap()
     }
     fn hook(&self, session: &str, name: &str, builtin: bool) -> Value {
+        self.hook_instance("default", session, name, builtin)
+    }
+    fn hook_instance(&self, instance: &str, session: &str, name: &str, builtin: bool) -> Value {
         let mut child = self
             .cmd()
-            .args(["hook", "--host", "pi"])
+            .args(["hook", "--agent", "pi", "--instance", instance])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -96,18 +99,30 @@ done
         fs::write(p.join("config.toml"), text).unwrap();
     }
 }
-impl Drop for Host {
+impl Drop for Agent {
     fn drop(&mut self) {
         for mode in ["pi", "cli"] {
-            let _ = self.cmd().args(["daemon", "stop", "--mode", mode]).output();
+            let _ = self
+                .cmd()
+                .args([
+                    "daemon",
+                    "stop",
+                    "--agent",
+                    match mode {
+                        "cli" => "agy-cli",
+                        "sidecar" => "agy-desktop",
+                        other => other,
+                    },
+                ])
+                .output();
         }
     }
 }
 
 #[test]
 fn rpc_reuses_process_isolates_sessions_and_counts_usage_once() {
-    let h = Host::new();
-    h.config("[hosts.pi.approver]\neffort = 'low'\n");
+    let h = Agent::new();
+    h.config("[agents.pi.approver]\neffort = 'low'\n");
     assert_eq!(h.hook("one", "bash", true)["decision"], "allow");
     assert_eq!(h.hook("one", "write", true)["decision"], "allow");
     assert_eq!(
@@ -125,11 +140,11 @@ fn rpc_reuses_process_isolates_sessions_and_counts_usage_once() {
             .count(),
         2
     );
-    let stats = h.run(&["stats", "--host", "pi", "--no-group"]);
+    let stats = h.run(&["stats", "--agent", "pi", "--no-group"]);
     assert!(stats.contains("54"), "{stats}"); // (10 + 5 + 3) * 3
     assert!(stats.contains("6"), "{stats}");
     let logs: Value =
-        serde_json::from_str(&h.run(&["logs", "--group-by", "host", "--json"])).unwrap();
+        serde_json::from_str(&h.run(&["logs", "--group-by", "agent", "--json"])).unwrap();
     assert_eq!(logs["pi"].as_array().unwrap().len(), 3);
     let args = fs::read_to_string(h.root.path().join("pi-args")).unwrap();
     for arg in ["rpc", "--no-tools", "--no-extensions", "--no-context-files"] {
@@ -138,27 +153,27 @@ fn rpc_reuses_process_isolates_sessions_and_counts_usage_once() {
 }
 #[test]
 fn pi_builtin_reads_are_fast_but_custom_names_are_reviewed() {
-    let h = Host::new();
+    let h = Agent::new();
     assert_eq!(h.hook("read", "read", true)["decision"], "allow");
     assert!(!h.root.path().join("pi-pids").exists());
     assert_eq!(h.hook("read", "view_file", false)["decision"], "allow");
     assert!(h.root.path().join("pi-pids").exists());
 }
 #[test]
-fn unsupported_effort_fails_before_prompt_and_provider_is_independent_of_host() {
-    let h = Host::new();
+fn unsupported_effort_fails_before_prompt_and_provider_is_independent_of_agent() {
+    let h = Agent::new();
     h.config("[approver]\nprovider='pi'\neffort='high'\n");
     assert_eq!(h.hook("one", "write", true)["decision"], "deny");
     assert!(!h.root.path().join("pi-prompts").exists());
     let c: Value =
-        serde_json::from_str(&h.run(&["config", "--host", "agy-cli", "--json"])).unwrap();
+        serde_json::from_str(&h.run(&["config", "--agent", "agy-cli", "--json"])).unwrap();
     assert_eq!(c["reviewer"]["approver"]["provider"], "pi");
 }
 #[test]
 fn host_override_resets_foreign_model_and_install_only_touches_pi() {
-    let h = Host::new();
-    h.config("[approver]\nprovider='openai'\nmodel='foreign'\neffort='high'\n[hosts.pi.approver]\nprovider='pi'\n");
-    let c: Value = serde_json::from_str(&h.run(&["config", "--host", "pi", "--json"])).unwrap();
+    let h = Agent::new();
+    h.config("[approver]\nprovider='openai'\nmodel='foreign'\neffort='high'\n[agents.pi.approver]\nprovider='pi'\n");
+    let c: Value = serde_json::from_str(&h.run(&["config", "--agent", "pi", "--json"])).unwrap();
     assert!(c["reviewer"]["approver"]["model"].is_null());
     assert!(c["reviewer"]["approver"]["effort"].is_null());
     h.run(&["install", "--pi"]);
@@ -179,13 +194,13 @@ fn host_override_resets_foreign_model_and_install_only_touches_pi() {
 
 #[test]
 fn cancelled_hook_discards_busy_rpc_and_next_review_uses_new_child() {
-    let h = Host::new();
+    let h = Agent::new();
     let path = h.root.path().join("pi");
     let script = fs::read_to_string(&path).unwrap().replace("printf '%s\\n' \"$line\" >> \"$HOME/pi-prompts\"", "printf '%s\\n' \"$line\" >> \"$HOME/pi-prompts\"\n  case \"$line\" in *HANG*) while IFS= read -r ignored; do :; done; exit;; esac");
     fs::write(path, script).unwrap();
     let mut hook = h
         .cmd()
-        .args(["hook", "--host", "pi"])
+        .args(["hook", "--agent", "pi"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -212,9 +227,9 @@ fn cancelled_hook_discards_busy_rpc_and_next_review_uses_new_child() {
 #[test]
 fn openai_responses_reuses_response_id_and_normalizes_usage() {
     use std::{io::Read, net::TcpListener};
-    let h = Host::new();
+    let h = Agent::new();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    h.config(&format!("[hosts.pi.approver]\nprovider='openai'\nmodel='fixture-model'\neffort='low'\nbase_url='http://{}/v1'\napi_key_env='APPROVER_FIXTURE_KEY'\n", server.local_addr().unwrap()));
+    h.config(&format!("[agents.pi.approver]\nprovider='openai'\nmodel='fixture-model'\neffort='low'\nbase_url='http://{}/v1'\napi_key_env='APPROVER_FIXTURE_KEY'\n", server.local_addr().unwrap()));
     let worker = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for i in 1..=2 {
@@ -256,7 +271,7 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
         let mut hook = h
             .cmd()
             .env("APPROVER_FIXTURE_KEY", "fixture-secret")
-            .args(["hook", "--host", "pi"])
+            .args(["hook", "--agent", "pi"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
@@ -280,30 +295,27 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
 }
 
 #[test]
-fn daemon_instances_coexist_and_status_all_finds_them() {
-    let h = Host::new();
-    h.run(&["daemon", "start", "--host", "pi"]);
-    h.run(&["daemon", "start", "--host", "agy-cli"]);
-    h.run(&["daemon", "start", "--host", "pi", "--instance", "second"]);
-    let statuses: Value = serde_json::from_str(&h.run(&["daemon", "status", "--all"])).unwrap();
-    assert_eq!(statuses.as_array().unwrap().len(), 3);
-    assert!(
-        statuses
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|v| v["instance"] == "second")
-    );
-    h.run(&["daemon", "stop", "--host", "pi", "--instance", "second"]);
-    assert_eq!(h.hook("one", "write", true)["decision"], "allow");
+fn daemon_start_is_shared_across_agents_and_instances() {
+    let h = Agent::new();
+    let first: Value = serde_json::from_str(&h.run(&["daemon", "start", "--agent", "pi"])).unwrap();
+    for args in [
+        vec!["daemon", "start", "--agent", "agy-cli"],
+        vec!["daemon", "start", "--agent", "pi", "--instance", "second"],
+    ] {
+        let status: Value = serde_json::from_str(&h.run(&args)).unwrap();
+        assert_eq!(status["pid"], first["pid"]);
+        assert_eq!(status["socket"], first["socket"]);
+    }
+    let status: Value = serde_json::from_str(&h.run(&["daemon", "status", "--all"])).unwrap();
+    assert_eq!(status["instances"], json!([]));
 }
 
 #[test]
 fn changed_config_starts_new_rpc_generation() {
-    let h = Host::new();
-    h.config("[hosts.pi.approver]\nmodel='mock/first'\n");
+    let h = Agent::new();
+    h.config("[agents.pi.approver]\nmodel='mock/first'\n");
     assert_eq!(h.hook("one", "write", true)["decision"], "allow");
-    h.config("[hosts.pi.approver]\nmodel='mock/second'\n");
+    h.config("[agents.pi.approver]\nmodel='mock/second'\n");
     assert_eq!(h.hook("one", "write", true)["decision"], "allow");
     assert_eq!(
         fs::read_to_string(h.root.path().join("pi-pids"))
@@ -318,13 +330,15 @@ fn changed_config_starts_new_rpc_generation() {
 }
 
 #[test]
-fn logs_use_running_daemon_provider_not_new_hook_environment() {
-    let h = Host::new();
-    h.run(&["daemon", "start", "--host", "pi"]);
+fn logs_use_request_provider_instead_of_daemon_startup_environment() {
+    let h = Agent::new();
+    h.run(&["daemon", "start", "--agent", "pi"]);
+    fs::write(h.root.path().join("agy"), "#!/bin/sh\necho '{\"status\":\"SUCCESS\",\"conversation_id\":\"cli-session\",\"response\":\"{\\\"outcome\\\":\\\"allow\\\"}\"}'\n").unwrap();
+    fs::set_permissions(h.root.path().join("agy"), fs::Permissions::from_mode(0o755)).unwrap();
     let mut hook = h
         .cmd()
         .env("AGY_AUTO_APPROVE_PROVIDER", "cli")
-        .args(["hook", "--host", "pi"])
+        .args(["hook", "--agent", "pi"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -334,15 +348,15 @@ fn logs_use_running_daemon_provider_not_new_hook_environment() {
     let result: Value = serde_json::from_slice(&hook.wait_with_output().unwrap().stdout).unwrap();
     assert_eq!(result["decision"], "allow");
     let records: Value =
-        serde_json::from_str(&h.run(&["logs", "--no-group", "--provider", "pi", "--json"]))
+        serde_json::from_str(&h.run(&["logs", "--no-group", "--provider", "cli", "--json"]))
             .unwrap();
     assert_eq!(records.as_array().unwrap().len(), 1);
-    assert_eq!(records[0]["provider"], "pi");
+    assert_eq!(records[0]["provider"], "cli");
 }
 
 #[test]
 fn pi_error_message_cannot_allow_even_if_text_contains_allow() {
-    let h = Host::new();
+    let h = Agent::new();
     let path = h.root.path().join("pi");
     let script = fs::read_to_string(&path)
         .unwrap()
@@ -354,16 +368,100 @@ fn pi_error_message_cannot_allow_even_if_text_contains_allow() {
 }
 
 #[test]
-fn logs_and_stats_default_to_host_groups() {
-    let h = Host::new();
+fn logs_and_stats_default_to_agent_groups() {
+    let h = Agent::new();
     h.hook("one", "write", true);
     let grouped: Value = serde_json::from_str(&h.run(&["logs", "--json"])).unwrap();
     assert_eq!(grouped["pi"].as_array().unwrap().len(), 1);
     let plain = h.run(&["logs"]);
-    assert!(plain.starts_with("host: pi\n"), "{plain}");
+    assert!(plain.starts_with("agent: pi\n"), "{plain}");
     let stats = h.run(&["stats"]);
-    assert!(stats.starts_with("host: pi\n"), "{stats}");
+    assert!(stats.starts_with("agent: pi\n"), "{stats}");
     assert!(stats.contains("\nTotal\n"), "{stats}");
     let merged: Value = serde_json::from_str(&h.run(&["logs", "--no-group", "--json"])).unwrap();
     assert_eq!(merged.as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn pi_sessions_are_private_and_idle_children_are_reaped_then_restored() {
+    use std::time::{Duration, Instant};
+    let h = Agent::new();
+    let mut daemon = h
+        .cmd()
+        .args([
+            "daemon",
+            "run",
+            "--session-idle-timeout",
+            "1",
+            "--idle-timeout",
+            "0",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while !h.root.path().join("a.sock").exists() {
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    for instance in ["default", "work"] {
+        assert_eq!(
+            h.hook_instance(instance, "same-conversation", "write", false)["decision"],
+            "allow"
+        );
+    }
+    let pids: Vec<u32> = fs::read_to_string(h.root.path().join("pi-pids"))
+        .unwrap()
+        .lines()
+        .map(|s| s.parse().unwrap())
+        .collect();
+    assert_eq!(pids.len(), 2);
+    assert_ne!(pids[0], pids[1]);
+    let state =
+        agy_auto_approve::sessions::directory(&h.root.path().join("state/pi"), "same-conversation")
+            .join("reviewer_session.json");
+    let saved = fs::read(&state).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status: Value = serde_json::from_str(&h.run(&["daemon", "status"])).unwrap();
+        if status["cached_sessions"] == 0 {
+            assert_eq!(status["instances"], json!([]));
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Idle sessions were not evicted: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for pid in &pids {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Command::new("/bin/kill")
+            .args(["-0", &pid.to_string()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+        {
+            assert!(Instant::now() < deadline, "Pi child {pid} was not reaped");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    assert_eq!(fs::read(&state).unwrap(), saved);
+    assert_eq!(
+        h.hook("same-conversation", "write", false)["decision"],
+        "allow"
+    );
+    assert_eq!(fs::read(&state).unwrap(), saved);
+    assert_eq!(
+        fs::read_to_string(h.root.path().join("pi-pids"))
+            .unwrap()
+            .lines()
+            .count(),
+        3
+    );
+    h.run(&["daemon", "stop"]);
+    assert!(daemon.wait().unwrap().success());
 }

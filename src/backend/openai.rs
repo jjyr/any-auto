@@ -20,7 +20,7 @@ impl OpenAiBackend {
         self.workspace.join("response.json")
     }
     async fn review(&self, payload: &str, id: &str) -> Result<String> {
-        let key = std::env::var(&self.config.approver.api_key_env)
+        let key = crate::context::var(&self.config.approver.api_key_env)
             .context("OpenAI approver API key environment variable is missing")?;
         ensure!(!key.is_empty(), "OpenAI approver API key is empty");
         let endpoint = format!(

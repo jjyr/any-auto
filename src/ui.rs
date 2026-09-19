@@ -3,7 +3,7 @@ use anyhow::Result;
 use dialoguer::{Confirm, Input, Select};
 use std::io::IsTerminal;
 
-pub fn stage_settings(hosts: &[config::Mode]) -> Result<Option<String>> {
+pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
     if !Confirm::new()
         .with_prompt("Customize approver settings?")
         .default(false)
@@ -17,10 +17,10 @@ pub fn stage_settings(hosts: &[config::Mode]) -> Result<Option<String>> {
         Err(e) => return Err(e.into()),
     };
     let mut doc: toml_edit::DocumentMut = text.parse()?;
-    for host in hosts {
+    for agent in agents {
         println!(
             "Configure {} (environment overrides still take precedence)",
-            host.host()
+            agent.agent()
         );
         let providers = ["Keep existing/default", "pi", "cli", "openai", "agentapi"];
         let Some(choice) = Select::new()
@@ -80,13 +80,13 @@ pub fn stage_settings(hosts: &[config::Mode]) -> Result<Option<String>> {
             settings["base_url"] = toml_edit::value(url);
             settings["api_key_env"] = toml_edit::value(key);
         }
-        if doc.get("hosts").is_none() {
-            doc["hosts"] = toml_edit::Item::Table(toml_edit::Table::new());
+        if doc.get("agents").is_none() {
+            doc["agents"] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        if doc["hosts"].get(host.host()).is_none() {
-            doc["hosts"][host.host()] = toml_edit::Item::Table(toml_edit::Table::new());
+        if doc["agents"].get(agent.agent()).is_none() {
+            doc["agents"][agent.agent()] = toml_edit::Item::Table(toml_edit::Table::new());
         }
-        doc["hosts"][host.host()]["approver"] = toml_edit::Item::Table(settings);
+        doc["agents"][agent.agent()]["approver"] = toml_edit::Item::Table(settings);
     }
     let proposed = doc.to_string();
     if proposed == text {
@@ -110,7 +110,7 @@ pub fn run() -> Result<()> {
         let Some(choice) = Select::new()
             .with_prompt("agy-auto-approve")
             .items(&[
-                "Host readiness",
+                "Agent readiness",
                 "Install integrations",
                 "Configure approvers",
                 "Logs",
@@ -129,12 +129,12 @@ pub fn run() -> Result<()> {
             3 => audit::print_list(
                 &audit::Filter {
                     limit: 20,
-                    group_by: Some(audit::Group::Host),
+                    group_by: Some(audit::Group::Agent),
                     ..Default::default()
                 },
                 false,
             ),
-            4 => stats::print(None, None, None, Some(audit::Group::Host)),
+            4 => stats::print(None, None, None, Some(audit::Group::Agent)),
             _ => return Ok(()),
         };
         if let Err(e) = result {

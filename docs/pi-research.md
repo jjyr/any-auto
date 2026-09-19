@@ -1,7 +1,7 @@
 # Pi extension and RPC research
 
 Investigated 2026-09-19 against the official Pi repository and locally installed
-`@earendil-works/pi-coding-agent` 0.84.2. This document separates host integration
+`@earendil-works/pi-coding-agent` 0.84.2. This document separates agent integration
 from the reviewer transport: an extension intercepts the user's Pi tool calls;
 the Rust daemon owns a different, tool-disabled Pi RPC process for reviewing them.
 
@@ -16,7 +16,7 @@ the Rust daemon owns a different, tool-disabled Pi RPC process for reviewing the
 - [Thinking capability resolution](https://github.com/earendil-works/pi/blob/main/packages/ai/src/models.ts)
 - [OpenAI reasoning effort](https://developers.openai.com/api/docs/guides/reasoning#reasoning-effort)
 
-## Host extension
+## Agent extension
 
 Pi discovers global TypeScript extensions under `~/.pi/agent/extensions/*.ts`
 and `extensions/*/index.ts`; project extensions require project trust. The agent
@@ -75,7 +75,9 @@ Useful commands:
 | `new_session`, `switch_session` | Session lifecycle, with cancellation results to inspect |
 
 Each reviewer conversation owns its RPC child, isolated workspace and explicit
-session file. Idle eviction or daemon shutdown releases the child. During an
+session file. Idle eviction or daemon shutdown kills and reaps the child. The shared daemon
+checks every second and evicts inactive sessions after five minutes by default;
+active and queued requests protect their session from eviction. During an
 operation the child must be owned by the cancellable future: deadline cancellation
 must kill it, not leave stale events for the next approval. Recovery starts a fresh
 process and must never repeat a tool action (reviewers have no tools).
@@ -120,9 +122,22 @@ pi TS extension -+     daemon/session pool +-- Pi RPC child per session
                   logs            stats
 ```
 
-Host routing and reviewer provider are independent. Each host has separate daemon
-socket/state; additional instances isolate host connection environments. Logs are
+Agent routing and reviewer provider are independent. One daemon/socket serves all
+agents; state and reviewer sessions remain isolated by agent and instance. Logs are
 chronological event records with optional grouping/filtering; stats aggregate
 usage and latency by selected dimensions. These are different views of the same
 audit data, not separate storage systems. No legacy log-schema compatibility is
 required for the new implementation.
+
+## RPC ownership and session switching
+
+Official RPC supports `switch_session(sessionPath)`, but `prompt` targets the single
+active session and has no target session parameter. Streaming steer/follow-up queues
+belong to that session; they are not concurrent independent sessions. An offline Pi
+0.84.2 check switched empty sessions A → B → A in one PID without model calls.
+
+This application deliberately does not share RPC children across conversations.
+One `(agent, instance, conversation)` owns one child while cached. Generic session-cache
+eviction releases backend resources; Pi owns child cleanup, while agy/agentapi simply
+release memory and retain their persisted conversation IDs. No `switch_session` RPC
+is required by the implementation. Disk state survives eviction and is loaded on demand.

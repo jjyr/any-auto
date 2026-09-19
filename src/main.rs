@@ -10,8 +10,8 @@ use std::io::Read;
     about = "Antigravity and Pi approval hooks and reviewer daemons"
 )]
 struct Cli {
-    /// Host routing/filter. Hooks auto-detect; logs/stats include all hosts unless filtered.
-    #[arg(long = "host", visible_alias = "mode", global = true, value_enum)]
+    /// Agent routing/filter. Hooks auto-detect; logs/stats include all agents unless filtered.
+    #[arg(long = "agent", value_name = "AGENT", global = true, value_enum)]
     mode: Option<config::Mode>,
     /// Isolate a daemon instance, or filter logs/stats to that instance.
     #[arg(long, global = true)]
@@ -25,11 +25,11 @@ enum Commands {
     Hook,
     /// Record a Pi user confirmation (internal extension protocol).
     HumanResult,
-    /// Check host detection and local reviewer readiness without model requests.
+    /// Check agent detection and local reviewer readiness without model requests.
     Doctor,
-    /// Show rolling model approval usage, grouped by host plus totals by default.
+    /// Show rolling model approval usage, grouped by agent plus totals by default.
     Stats {
-        #[arg(long, value_enum, default_value = "host")]
+        #[arg(long, value_enum, default_value = "agent")]
         group_by: audit::Group,
         #[arg(long)]
         no_group: bool,
@@ -62,7 +62,7 @@ enum Commands {
         /// Print recent approvals, then follow newly completed approvals until Ctrl-C.
         #[arg(short, long)]
         follow: bool,
-        /// Group recent records (default: host). Follow always uses chronological order.
+        /// Group recent records (default: agent). Follow always uses chronological order.
         #[arg(long, value_enum, conflicts_with_all = ["follow", "no_group"])]
         group_by: Option<audit::Group>,
         /// Merge all matching records into one chronological list.
@@ -95,11 +95,15 @@ enum DaemonCommand {
         all: bool,
     },
     Stop,
-    /// Stop the daemon, forget the cached reviewer conversation, and start again.
+    /// Restart the shared daemon, preserving persisted reviewer sessions.
     Restart,
+    /// Clear one agent/instance reviewer cache, preserving circuit breakers.
+    Reset,
     Run {
         #[arg(long, default_value_t = 1800)]
         idle_timeout: u64,
+        #[arg(long, default_value_t = 300, value_parser = clap::value_parser!(u64).range(1..))]
+        session_idle_timeout: u64,
     },
 }
 #[derive(Subcommand)]
@@ -218,13 +222,13 @@ async fn main() -> Result<()> {
                     decision,
                     tool,
                     conversation,
-                    host: selected_mode.map(|m| m.host().into()),
+                    agent: selected_mode.map(|m| m.agent().into()),
                     provider: provider.map(|p| p.as_str().into()),
                     instance: cli.instance.clone(),
                     group_by: if follow || no_group {
                         None
                     } else {
-                        Some(group_by.unwrap_or(audit::Group::Host))
+                        Some(group_by.unwrap_or(audit::Group::Agent))
                     },
                 };
                 if follow {
@@ -244,12 +248,18 @@ async fn main() -> Result<()> {
         Commands::Update { version } => upgrade::update(version.as_deref()).await?,
         Commands::Install { options } => install::run(options)?,
         Commands::Daemon { command } => match command {
-            DaemonCommand::Run { idle_timeout } => daemon::run(idle_timeout).await?,
+            DaemonCommand::Run {
+                idle_timeout,
+                session_idle_timeout,
+            } => daemon::run(idle_timeout, session_idle_timeout).await?,
+            DaemonCommand::Reset => {
+                anyhow::ensure!(selected_mode.is_some(), "reset requires --agent");
+                println!("{}", daemon::reset().await?);
+            }
             DaemonCommand::Start => println!("{}", daemon::start().await?),
             DaemonCommand::Status { all: true } => println!("{}", daemon::status_all().await?),
             DaemonCommand::Status { all: false } => {
-                match daemon::request(&config::socket_path(), &json!({"action":"status"}), 1).await
-                {
+                match daemon::status(selected_mode, cli.instance.as_deref()).await {
                     Ok(v) if v["status"] == "running" => println!("{v}"),
                     _ => {
                         println!(

@@ -232,7 +232,7 @@ impl Bridge {
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(
-                &serde_json::json!({"approver":config.approver,"prompt":config.prompt})
+                &serde_json::json!({"approver":config.approver,"prompt":config.prompt,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
             )?)
         );
         if self.fingerprint.as_ref() != Some(&fingerprint) {

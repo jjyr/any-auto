@@ -18,7 +18,7 @@ fn print_outcomes(
         .filter(|(date, _)| *date >= first && *date <= now.date_naive())
         .map(|(_, path)| path);
     audit::scan(paths, |event| {
-        if mode.is_some_and(|m| event["host"] != m.host())
+        if mode.is_some_and(|m| event["agent"] != m.agent())
             || provider.is_some_and(|p| event["provider"] != p)
             || instance.is_some_and(|i| event["instance"] != i)
         {
@@ -156,7 +156,7 @@ impl Collector {
             ))
             .or_default();
         let data = &event["data"];
-        for key in ["host", "provider", "instance", "model", "effort_requested"] {
+        for key in ["agent", "provider", "instance", "model", "effort_requested"] {
             if kind.starts_with("backend_") || !request.dimensions.contains_key(key) {
                 // Backend events describe the running daemon's effective settings,
                 // which can differ from a hook process with a newer environment.

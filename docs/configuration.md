@@ -6,25 +6,25 @@ unsupported effort values are errors. Configuration is not read from projects.
 
 ## Defaults and overrides
 
-| Host (`--host`) | Default approver provider | Authentication |
+| Agent (`--agent`) | Default approver provider | Authentication |
 | --- | --- | --- |
-| `agy-cli` (`--mode cli`) | `cli` — agy executable | Existing agy login |
-| `agy-desktop` (`--mode sidecar`) | `agentapi` | Desktop connection environment and login |
+| `agy-cli` | `cli` — agy executable | Existing agy login |
+| `agy-desktop` | `agentapi` | Desktop connection environment and login |
 | `pi` | `pi` — persistent Pi RPC | Existing Pi authentication or provider environment |
 
-Host and provider are independent: an agy hook can use Pi RPC, and a Pi extension
+Agent and provider are independent: an agy hook can use Pi RPC, and a Pi extension
 can use agy CLI or OpenAI. `agentapi` requires a Desktop connection even when
-selected by another host. Failures never silently switch providers.
+selected by another agent. Failures never silently switch providers.
 
 ```toml
-# Optional common override. Omit all settings to keep host-specific defaults.
+# Optional common override. Omit all settings to keep agent-specific defaults.
 [approver]
 provider = "pi"
 model = "anthropic/claude-sonnet-4-5"
 effort = "low"
 
-# Optional per-host override. Also available: hosts.agy-cli, hosts.agy-desktop.
-[hosts.pi.approver]
+# Optional per-agent override. Also available: agents.agy-cli, agents.agy-desktop.
+[agents.pi.approver]
 provider = "openai"
 model = "gpt-5.5"
 effort = "low"
@@ -41,10 +41,10 @@ or effort uses the backend default. A blank model also selects the default.
 The optional top-level `prompt` replaces the built-in policy, including when it
 is explicitly empty. Do not put secrets in prompts or model names.
 
-Resolution: built-in defaults, common `[approver]`, matching host override,
+Resolution: built-in defaults, common `[approver]`, matching agent override,
 then nonempty environment overrides. Switching provider in an override resets
 inherited model, effort, base URL, and key environment variable. Same-provider
-overrides merge fields. Only the selected host's effective settings are validated,
+overrides merge fields. Only the selected agent's effective settings are validated,
 apart from the retained legacy `model` tier validation.
 
 Legacy `model` (agentapi tier), `cli_model` (agy model), and `prompt` remain accepted.
@@ -101,22 +101,24 @@ refusals, incomplete responses and invalid assessments fail closed.
 ## Applying changes
 
 ```bash
-agy-auto-approve config --host pi --json
+agy-auto-approve config --agent pi --json
 agy-auto-approve config --edit
-agy-auto-approve daemon restart --host pi
+agy-auto-approve daemon reset --agent pi
 ```
 
 Configuration is resolved before each model review. A changed effective
 provider/model/effort/prompt creates a new reviewer generation; persisted session
 IDs from another configuration are not reused. Circuit breaker history survives.
-Already-running daemons retain their startup environment, so environment or login
-source changes need a daemon restart. Pi's external defaults are resolved at
-RPC startup; restart to pick up external default changes. `config` shows settings
-resolved by the invoking process, not a running daemon's environment.
+Hooks send relevant backend environment overrides and connection credentials through
+the private socket. The shared daemon scopes these to each request and backend child,
+never mutating its global environment or recording credentials in audit events.
+Changing the request context resets incompatible reviewer state. Pi external defaults
+are resolved at RPC startup; reset its instance to pick up changes immediately.
+`config` shows the invoking process's effective settings.
 
 ## Paths and environment
 
-Application configuration and data are independent of host installation directories.
+Application configuration and data are independent of agent installation directories.
 `XDG_CONFIG_HOME` and `XDG_DATA_HOME` override the defaults when absolute.
 Pi users do not need agy installed.
 
@@ -129,29 +131,27 @@ Pi users do not need agy installed.
 | `AGY_AUTO_APPROVE_MODEL`, `AGY_AUTO_APPROVE_CLI_MODEL` | Legacy agentapi tier / agy model |
 | `AGY_AUTO_APPROVE_PROMPT` | Policy replacement |
 | `AGY_APPROVER_SOCKET` | Socket base, default `~/.local/share/agy-auto-approve/runtime/approver.sock` |
-| `AGY_APPROVER_STATE_DIR` | State base, default `~/.local/share/agy-auto-approve/hosts` |
+| `AGY_APPROVER_STATE_DIR` | State base, default `~/.local/share/agy-auto-approve/agents` |
 | `AGY_AUTO_APPROVE_LOG_DIR` | Shared daily logs, default `~/.local/share/agy-auto-approve/logs` |
 | `AGY_AUTO_APPROVE_SILENT` | Suppress hook stderr notices |
 | `PI_CODING_AGENT_DIR` | Pi configuration/authentication source and extension installation root |
 
-Sockets/state are separated by host mode and optional `--instance NAME`.
-Nondefault instance names use a short hash in paths. Use the same instance for
-hook and daemon commands. Multiple Desktop connections should use distinct
-instances in their launch/hook configuration; a single instance inherits one
-connection environment. Setting only the log-directory override places state
-under its `state/` subdirectory. The binary preserves inherited PATH and appends
+The socket is shared across all agents and instances. State remains isolated by agent
+and instance. Multiple Desktop connections should use distinct instance names on their
+hooks. Setting only the log-directory override places state under its `state/`
+subdirectory. The binary preserves each caller's backend PATH and appends
 `~/.gemini/antigravity-cli/bin` for agy/agentapi lookup.
 
 ## Overview, TUI and directories
 
 Bare `agy-auto-approve` opens the terminal menu. The configuration form can edit
-per-host approver backend, model and effort; installation uses the same form.
+per-agent approver backend, model and effort; installation uses the same form.
 Agentapi has no effort selector. Other model-specific capabilities are checked during
 review, not by sending paid requests in the form. Secrets remain in environment variables.
 Changes are previewed and saved only after confirmation. Unrelated TOML fields/comments
-are preserved. Switching a backend in the form replaces that host's approver settings.
+are preserved. Switching a backend in the form replaces that agent's approver settings.
 
-`config` displays all three hosts and setting sources; `config --host pi` selects one.
+`config` displays all three agents and setting sources; `config --agent pi` selects one.
 `config --edit` opens the shared TOML file. A root invocation with options requires a
 subcommand and never enters the TUI.
 
@@ -160,7 +160,7 @@ start fresh. Existing explicit path environment overrides still work.
 Before upgrading an active installation, stop its old daemons using the old binary:
 the new default paths do not discover processes listening on legacy sockets.
 
-Default state directories are `hosts/<host>/<instance>` under the application data root.
+Default state directories are `agents/<agent>/<instance>` under the application data root.
 Runtime sockets use `$XDG_RUNTIME_DIR/agy-auto-approve/runtime` when set to an absolute
 path, otherwise the application data directory's `runtime/` directory. Explicit socket
-and state overrides retain their existing host/instance suffix behavior.
+overrides identify one shared socket; state overrides retain agent/instance suffixes.

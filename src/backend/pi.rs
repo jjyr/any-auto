@@ -19,8 +19,19 @@ pub struct PiBackend {
     config: ReviewerConfig,
     rpc: Mutex<Option<Rpc>>,
 }
+// Drop cannot await child.wait(). Track asynchronous cleanup tasks so daemon
+// shutdown can wait for terminated Pi children to be reaped before exiting.
+static CHILD_CLEANUP_TASKS: std::sync::LazyLock<
+    std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(Vec::new()));
+pub(super) async fn reap_children() {
+    let tasks = std::mem::take(&mut *CHILD_CLEANUP_TASKS.lock().unwrap());
+    for task in tasks {
+        let _ = task.await;
+    }
+}
 struct Rpc {
-    child: Child,
+    child: Option<Child>,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     stderr: tokio::task::JoinHandle<()>,
@@ -29,7 +40,14 @@ struct Rpc {
 }
 impl Drop for Rpc {
     fn drop(&mut self) {
-        let _ = self.child.start_kill();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+            let mut cleanup_tasks = CHILD_CLEANUP_TASKS.lock().unwrap();
+            cleanup_tasks.retain(|task| !task.is_finished());
+            cleanup_tasks.push(tokio::spawn(async move {
+                let _ = child.wait().await;
+            }));
+        }
         self.stderr.abort();
     }
 }
@@ -172,10 +190,11 @@ impl PiBackend {
         }
         // Keep Pi's native auth path and OAuth lock identity. Startup model/thinking
         // options do not persist defaults; RPC setters on Pi 0.84.2 can persist them.
-        let source = std::env::var_os("PI_CODING_AGENT_DIR")
+        let source = crate::context::var_os("PI_CODING_AGENT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| crate::config::home().join(".pi/agent"));
         let mut command = Command::new("pi");
+        crate::context::apply(&mut command);
         command
             .current_dir(&self.workspace)
             .env("PI_CODING_AGENT_DIR", &source)
@@ -222,7 +241,7 @@ impl PiBackend {
             }
         });
         let mut rpc = Rpc {
-            child,
+            child: Some(child),
             input,
             output,
             stderr,

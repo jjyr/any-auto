@@ -19,12 +19,12 @@ impl Sandbox {
             .prefix("agy-rs-")
             .tempdir_in("/tmp")
             .unwrap();
-        let socket = dir.path().join("a-sidecar.sock");
+        let socket = dir.path().join("a.sock");
         Self { dir, socket }
     }
     fn command(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
-        c.args(["--mode", "sidecar"])
+        c.args(["--agent", "agy-desktop"])
             .env("HOME", self.dir.path())
             .env_remove("AGY_AUTO_APPROVE_MODEL")
             .env_remove("AGY_AUTO_APPROVE_PROMPT")
@@ -72,8 +72,8 @@ fn payload(command: &str) -> String {
 }
 
 #[test]
-fn agentapi_cli_fallback_preserves_host_path_priority() {
-    for host_available in [false, true] {
+fn agentapi_cli_fallback_preserves_agent_path_priority() {
+    for agent_available in [false, true] {
         let s = Sandbox::new();
         let fallback = s.dir.path().join(".gemini/antigravity-cli/bin");
         fs::create_dir_all(&fallback).unwrap();
@@ -86,12 +86,12 @@ esac
 "#,
         );
         fs::rename(s.dir.path().join("agentapi"), fallback.join("agentapi")).unwrap();
-        if host_available {
+        if agent_available {
             s.mock(
                 r#"
 case "$1" in
-  new-conversation) echo '{"conversationId":"host"}';;
-  send-message) echo '{"outcome":"deny","rationale":"host reviewer decision"}';;
+  new-conversation) echo '{"conversationId":"agent"}';;
+  send-message) echo '{"outcome":"deny","rationale":"agent reviewer decision"}';;
 esac
 "#,
             );
@@ -101,14 +101,14 @@ esac
         let output = s.hook(&input.to_string());
         assert_eq!(
             output["decision"],
-            if host_available { "deny" } else { "allow" }
+            if agent_available { "deny" } else { "allow" }
         );
         assert!(
             output["reason"]
                 .as_str()
                 .unwrap()
-                .contains(if host_available {
-                    "host reviewer decision"
+                .contains(if agent_available {
+                    "agent reviewer decision"
                 } else {
                     "CLI fallback"
                 })
@@ -273,7 +273,7 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
     let config = s.dir.path().join(".gemini/config");
     fs::create_dir_all(&config).unwrap();
     fs::write(config.join("hooks.json"), r#"{"other":{"enabled":true}}"#).unwrap();
-    let out = s.run(&["install", "--hosts", "agy-cli,agy-desktop"]);
+    let out = s.run(&["install", "--agents", "agy-cli,agy-desktop"]);
     assert!(
         out.status.success(),
         "{}",
@@ -287,7 +287,7 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
     assert!(command.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
     assert!(!command.contains("python"));
     assert!(
-        s.run(&["install", "--hosts", "agy-cli,agy-desktop"])
+        s.run(&["install", "--agents", "agy-cli,agy-desktop"])
             .status
             .success()
     );
@@ -709,7 +709,7 @@ fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
         &s.dir.path().join("logs"),
         chrono::Utc::now().date_naive(),
     );
-    let event = json!({"schema_version":3, "host":"agy-desktop", "event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
+    let event = json!({"schema_version":3, "agent":"agy-desktop", "event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
     let split = event.len() / 2;
     let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
     file.write_all(&event.as_bytes()[..split]).unwrap();
@@ -823,10 +823,7 @@ fn registration_modes_preserve_existing_permissions() {
                 .unwrap(),
             )
             .unwrap();
-            assert_eq!(
-                manifest["args"],
-                json!(["daemon", "run", "--mode", "sidecar"])
-            );
+            assert_eq!(manifest["args"], json!(["daemon", "start"]));
         } else {
             assert!(
                 actual["permissions"]["allow"]
@@ -898,7 +895,7 @@ fn global_config_edit_and_precedence() {
 }
 
 #[test]
-fn restart_resets_session_and_applies_model_and_prompt() {
+fn reset_clears_session_and_applies_model_and_prompt() {
     let s = Sandbox::new();
     s.mock(
         r#"
@@ -920,7 +917,7 @@ esac
         r#"{"conversationId":"old"}"#,
     )
     .unwrap();
-    assert!(s.run(&["daemon", "restart"]).status.success());
+    assert!(s.run(&["daemon", "reset"]).status.success());
     assert!(
         !agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
             .join("reviewer_session.json")
@@ -947,7 +944,7 @@ esac
         fs::read_to_string(s.dir.path().join("created")).unwrap(),
         changed
     );
-    assert!(s.run(&["daemon", "restart"]).status.success());
+    assert!(s.run(&["daemon", "reset"]).status.success());
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let after = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert_eq!(

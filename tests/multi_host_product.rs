@@ -15,7 +15,7 @@ fn command(home: &std::path::Path) -> Command {
     c
 }
 #[test]
-fn overview_and_xdg_paths_are_host_neutral() {
+fn overview_and_xdg_paths_are_agent_neutral() {
     let home = tempfile::tempdir().unwrap();
     let out = command(home.path())
         .args(["config", "--json"])
@@ -24,7 +24,7 @@ fn overview_and_xdg_paths_are_host_neutral() {
         .unwrap();
     assert!(out.status.success());
     let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["hosts"].as_array().unwrap().len(), 3);
+    assert_eq!(v["agents"].as_array().unwrap().len(), 3);
     assert_eq!(
         v["file"],
         home.path()
@@ -41,23 +41,23 @@ fn root_without_terminal_fails_and_flags_do_not_open_tui() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("TUI requires a terminal"));
     let out = command(home.path())
-        .args(["--host", "pi"])
+        .args(["--agent", "pi"])
         .output()
         .unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Choose a subcommand"));
 }
 #[test]
-fn host_group_limit_preserves_quiet_hosts_and_outcomes() {
+fn host_group_limit_preserves_quiet_agents_and_outcomes() {
     let home = tempfile::tempdir().unwrap();
     let logs = home.path().join("logs");
     fs::create_dir_all(&logs).unwrap();
     let now = chrono::Utc::now();
     let mut rows = String::new();
-    for (id, host) in [("a", "pi"), ("b", "agy-cli"), ("c", "agy-cli")] {
+    for (id, agent) in [("a", "pi"), ("b", "agy-cli"), ("c", "agy-cli")] {
         rows += &format!(
             "{}\n",
-            serde_json::json!({"schema_version":3,"id":id,"host":host,"mode":if host=="pi" {"pi"} else {"cli"},"timestamp":now.to_rfc3339(),"event":"hook_result","data":{"stage":"whitelist","output":{"decision":"allow"}}})
+            serde_json::json!({"schema_version":3,"id":id,"agent":agent,"mode":if agent=="pi" {"pi"} else {"cli"},"timestamp":now.to_rfc3339(),"event":"hook_result","data":{"stage":"whitelist","output":{"decision":"allow"}}})
         );
     }
     fs::write(
@@ -90,11 +90,11 @@ fn effective_config_reports_sources_and_independent_paths() {
     fs::create_dir_all(&dir).unwrap();
     fs::write(
         dir.join("config.toml"),
-        "[approver]\nprovider='pi'\neffort='low'\n[hosts.pi.approver]\nmodel='example/model'\n",
+        "[approver]\nprovider='pi'\neffort='low'\n[agents.pi.approver]\nmodel='example/model'\n",
     )
     .unwrap();
     let out = command(home.path())
-        .args(["config", "--host", "pi", "--json"])
+        .args(["config", "--agent", "pi", "--json"])
         .env("XDG_DATA_HOME", home.path().join("data"))
         .env("AGY_AUTO_APPROVE_EFFORT", "high")
         .env_remove("AGY_AUTO_APPROVE_LOG_DIR")
@@ -107,7 +107,7 @@ fn effective_config_reports_sources_and_independent_paths() {
     assert_eq!(v["reviewer"]["approver_sources"]["provider"], "[approver]");
     assert_eq!(
         v["reviewer"]["approver_sources"]["model"],
-        "[hosts.pi.approver]"
+        "[agents.pi.approver]"
     );
     assert_eq!(
         v["reviewer"]["approver_sources"]["effort"],
@@ -116,15 +116,44 @@ fn effective_config_reports_sources_and_independent_paths() {
     assert_eq!(
         v["state_dir"],
         home.path()
-            .join("data/agy-auto-approve/hosts/pi/default")
+            .join("data/agy-auto-approve/agents/pi/default")
             .to_str()
             .unwrap()
     );
     assert_eq!(
         v["socket"],
         home.path()
-            .join("data/agy-auto-approve/runtime/approver-pi.sock")
+            .join("data/agy-auto-approve/runtime/approver.sock")
             .to_str()
             .unwrap()
     );
+}
+
+#[test]
+fn old_routing_names_are_rejected_without_aliases() {
+    let home = tempfile::tempdir().unwrap();
+    for args in [
+        vec!["config", "--host", "pi"],
+        vec!["config", "--mode", "pi"],
+        vec!["install", "--hosts", "pi", "--dry-run"],
+        vec!["logs", "--group-by", "host"],
+        vec!["stats", "--group-by", "host"],
+        vec!["config", "--agent", "cli"],
+    ] {
+        let output = command(home.path()).args(&args).output().unwrap();
+        assert!(!output.status.success(), "old selector accepted: {args:?}");
+    }
+    let dir = home.path().join(".config/agy-auto-approve");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        "[hosts.pi.approver]\nprovider='pi'\n",
+    )
+    .unwrap();
+    let output = command(home.path())
+        .args(["config", "--agent", "pi"])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field `hosts`"));
 }

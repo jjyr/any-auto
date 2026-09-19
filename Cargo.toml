@@ -2,7 +2,7 @@
 name = "agy-auto-approve"
 version = "0.4.5"
 edition = "2024"
-description = "Multi-host approval hooks and persistent reviewers for Antigravity and Pi"
+description = "Multi-agent approval hooks and persistent reviewers for Antigravity and Pi"
 license = "MIT"
 repository = "https://github.com/jjyr/agy-auto-approve"
 

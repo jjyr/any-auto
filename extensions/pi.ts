@@ -30,7 +30,7 @@ export default function (pi: ExtensionAPI) {
     };
     try {
       const response = await new Promise<any>((resolve, reject) => {
-        const child = spawn(executable, ["hook", "--mode", "pi"], { stdio: ["pipe", "pipe", "pipe"] });
+        const child = spawn(executable, ["hook", "--agent", "pi"], { stdio: ["pipe", "pipe", "pipe"] });
         let stdout = "";
         let bytes = 0;
         const stop = () => { child.kill("SIGKILL"); reject(new Error("Approval cancelled")); };
@@ -63,7 +63,7 @@ export default function (pi: ExtensionAPI) {
         }
         // Report the human outcome separately; it never changes model usage statistics.
         await new Promise<void>((resolve) => {
-          const child = spawn(executable, ["human-result", "--mode", "pi"], { stdio: ["pipe", "ignore", "ignore"] });
+          const child = spawn(executable, ["human-result", "--agent", "pi"], { stdio: ["pipe", "ignore", "ignore"] });
           const timer = setTimeout(() => { child.kill("SIGKILL"); resolve(); }, 2000);
           child.on("error", () => { clearTimeout(timer); resolve(); });
           child.on("close", () => { clearTimeout(timer); resolve(); });

@@ -49,7 +49,7 @@ fn append(id: &str, event: &str, data: Value) -> Result<()> {
         json!({"provider":settings.as_ref().map(|c| c.provider),"model":settings.as_ref().and_then(|c| c.model.as_ref()),"effort_requested":settings.as_ref().and_then(|c| c.effort.as_ref())})
     };
     let entry = json!({"schema_version":3,
-        "host":config::mode().host(), "instance":config::instance(),
+        "agent":config::mode().agent(), "instance":config::instance(),
         "provider":reviewer["provider"],
         "model":reviewer["model"],
         "effort_requested":reviewer["effort_requested"], "id":id, "timestamp":now.to_rfc3339(),
@@ -63,14 +63,14 @@ pub struct Filter {
     pub decision: Option<String>,
     pub tool: Option<String>,
     pub conversation: Option<String>,
-    pub host: Option<String>,
+    pub agent: Option<String>,
     pub provider: Option<String>,
     pub instance: Option<String>,
     pub group_by: Option<Group>,
 }
 #[derive(Debug, Clone, Copy, clap::ValueEnum)]
 pub enum Group {
-    Host,
+    Agent,
     Provider,
     Model,
     Effort,
@@ -80,7 +80,7 @@ pub enum Group {
 impl Group {
     pub fn key(self) -> &'static str {
         match self {
-            Self::Host => "host",
+            Self::Agent => "agent",
             Self::Provider => "provider",
             Self::Model => "model",
             Self::Effort => "effort_requested",
@@ -181,8 +181,8 @@ pub fn list(filter: &Filter) -> Result<Vec<Value>> {
     let mut groups: BTreeMap<String, VecDeque<Value>> = BTreeMap::new();
     events(|entry| {
         if let Some(record) = summary(&entry, filter) {
-            let key = if matches!(filter.group_by, Some(Group::Host)) {
-                record["host"].as_str().unwrap_or("unknown").to_owned()
+            let key = if matches!(filter.group_by, Some(Group::Agent)) {
+                record["agent"].as_str().unwrap_or("unknown").to_owned()
             } else {
                 String::new()
             };
@@ -205,7 +205,7 @@ fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
         return None;
     }
     let d = &entry["data"];
-    if filter.host.as_deref().is_some_and(|v| entry["host"] != v)
+    if filter.agent.as_deref().is_some_and(|v| entry["agent"] != v)
         || filter
             .provider
             .as_deref()
@@ -230,7 +230,7 @@ fn summary(entry: &Value, filter: &Filter) -> Option<Value> {
         return None;
     }
     Some(json!({"id":entry["id"], "timestamp":entry["timestamp"],
-            "host":entry["host"], "provider":entry["provider"], "model":entry["model"], "effort_requested":entry["effort_requested"], "instance":entry["instance"],
+            "agent":entry["agent"], "provider":entry["provider"], "model":entry["model"], "effort_requested":entry["effort_requested"], "instance":entry["instance"],
             "mode":entry["mode"], "tool":d["tool"], "conversation_id":d["conversation_id"], "decision":d["output"]["decision"],
             "command":d["command"], "cwd":d["cwd"],
             "reason":d["output"]["reason"], "stage":d["stage"], "duration_ms":d["duration_ms"]}))
@@ -303,13 +303,13 @@ fn print_record(record: &Value, json_output: bool) {
                 .collect()
         };
         println!(
-            "{}  {}  {:9}  {}  stage={} host={} provider={}\n  {}",
+            "{}  {}  {:9}  {}  stage={} agent={} provider={}\n  {}",
             text("timestamp"),
             text("id"),
             text("decision"),
             text("tool"),
             text("stage"),
-            text("host"),
+            text("agent"),
             text("provider"),
             text("reason")
         );

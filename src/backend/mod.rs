@@ -38,3 +38,7 @@ fn conversation_id(v: &Value) -> Result<String> {
         .map(str::to_owned)
         .context("No conversationId in backend output")
 }
+
+pub async fn reap_children() {
+    pi::reap_children().await;
+}

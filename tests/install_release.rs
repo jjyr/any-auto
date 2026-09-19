@@ -348,11 +348,22 @@ fn successful_update_stops_existing_daemon() {
     let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
     fs::write(root.join(".crates2.json"), r#"{"installs":{"agy-auto-approve 0.4.2 (registry+https://github.com/rust-lang/crates.io-index)":{"bins":["agy-auto-approve"]}}}"#).unwrap();
     executable(&f.dir.path().join("bin/cargo"), "#!/bin/sh\nexit 0\n");
-    let mut daemons: Vec<_> = ["cli", "sidecar"]
+    let mut daemons: Vec<_> = ["cli"]
         .into_iter()
         .map(|mode| {
             Command::new(f.installed())
-                .args(["daemon", "run", "--mode", mode, "--idle-timeout", "30"])
+                .args([
+                    "daemon",
+                    "run",
+                    "--agent",
+                    match mode {
+                        "cli" => "agy-cli",
+                        "sidecar" => "agy-desktop",
+                        other => other,
+                    },
+                    "--idle-timeout",
+                    "30",
+                ])
                 .env("HOME", f.dir.path().join("home"))
                 .env("AGY_APPROVER_SOCKET", f.dir.path().join("approver.sock"))
                 .env("AGY_APPROVER_STATE_DIR", f.dir.path().join("state"))
@@ -364,18 +375,13 @@ fn successful_update_stops_existing_daemon() {
         })
         .collect();
     for _ in 0..100 {
-        if ["cli", "sidecar"]
-            .iter()
-            .all(|mode| f.dir.path().join(format!("approver-{mode}.sock")).exists())
-        {
+        if f.dir.path().join("approver.sock").exists() {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     let out = f.run(f.command(), &[]);
-    let stopped = ["cli", "sidecar"]
-        .iter()
-        .all(|mode| !f.dir.path().join(format!("approver-{mode}.sock")).exists());
+    let stopped = !f.dir.path().join("approver.sock").exists();
     for daemon in &mut daemons {
         let _ = daemon.kill();
         let _ = daemon.wait();
@@ -385,6 +391,6 @@ fn successful_update_stops_existing_daemon() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(String::from_utf8_lossy(&out.stdout).contains("CLI will start the new daemon"));
+    assert!(String::from_utf8_lossy(&out.stdout).contains("The shared daemon will start"));
     assert!(stopped);
 }

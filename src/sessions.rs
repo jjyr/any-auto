@@ -27,7 +27,7 @@ pub fn directory(base: &Path, user_session_id: &str) -> PathBuf {
 
 struct Session {
     bridge: tokio::sync::Mutex<Bridge>,
-    last_used: Mutex<Instant>,
+    last_active: Mutex<Instant>,
 }
 
 pub struct SessionPool {
@@ -45,7 +45,7 @@ impl SessionLease {
 impl Drop for SessionLease {
     fn drop(&mut self) {
         // Runs on success, failure, and cancellation, before releasing our Arc.
-        *self.0.last_used.lock().unwrap() = Instant::now();
+        *self.0.last_active.lock().unwrap() = Instant::now();
     }
 }
 impl SessionPool {
@@ -60,31 +60,33 @@ impl SessionPool {
         let Some(id) = id.filter(|id| !id.trim().is_empty()) else {
             return Ok(SessionLease(Arc::new(Session {
                 bridge: tokio::sync::Mutex::new(Bridge::temporary(self.mode)?),
-                last_used: Mutex::new(Instant::now()),
+                last_active: Mutex::new(Instant::now()),
             })));
         };
         let path = directory(&self.base, id);
         let key = path.file_name().unwrap().to_string_lossy().into_owned();
         let mut entries = self.entries.lock().unwrap();
-        if !entries.contains_key(&key) && entries.len() >= 32 {
-            let oldest = entries
-                .iter()
-                .filter(|(_, session)| Arc::strong_count(session) == 1)
-                .min_by_key(|(_, session)| *session.last_used.lock().unwrap())
-                .map(|(key, _)| key.clone());
-            if let Some(key) = oldest {
-                entries.remove(&key);
-            } else {
-                anyhow::bail!("Reviewer session limit reached; retry after active reviews finish");
-            }
-        }
         let entry = entries.entry(key).or_insert_with(|| {
             Arc::new(Session {
                 bridge: tokio::sync::Mutex::new(Bridge::persistent(self.mode, path)),
-                last_used: Mutex::new(Instant::now()),
+                last_active: Mutex::new(Instant::now()),
             })
         });
         Ok(SessionLease(Arc::clone(entry)))
+    }
+    pub fn reset(&self) -> Result<()> {
+        let mut entries = self.entries.lock().unwrap();
+        anyhow::ensure!(
+            entries.values().all(|s| Arc::strong_count(s) == 1),
+            "Instance has active or queued reviews; retry after they finish"
+        );
+        entries.clear();
+        let path = self.base.join("sessions");
+        match std::fs::remove_dir_all(path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
     }
     pub fn len(&self) -> usize {
         self.entries.lock().unwrap().len()
@@ -95,7 +97,7 @@ impl SessionPool {
     pub fn prune(&self, idle: Duration) {
         self.entries.lock().unwrap().retain(|_, session| {
             // Leases include requests waiting for the per-session lock.
-            Arc::strong_count(session) > 1 || session.last_used.lock().unwrap().elapsed() < idle
+            Arc::strong_count(session) > 1 || session.last_active.lock().unwrap().elapsed() < idle
         });
     }
 }
@@ -103,6 +105,25 @@ impl SessionPool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn idle_timeout_has_no_capacity_cap_and_reset_protects_leases() {
+        let root = tempfile::tempdir().unwrap();
+        let pool = SessionPool::new(Mode::Pi, root.path().to_owned());
+        for i in 0..40 {
+            drop(pool.acquire(Some(&format!("session-{i}"))).unwrap());
+        }
+        assert_eq!(pool.len(), 40);
+        let active = pool.acquire(Some("session-0")).unwrap();
+        assert!(pool.reset().is_err());
+        assert_eq!(pool.len(), 40);
+        pool.prune(Duration::ZERO);
+        assert_eq!(pool.len(), 1);
+        drop(active);
+        pool.prune(Duration::from_secs(300));
+        assert_eq!(pool.len(), 1, "idle time starts after final lease release");
+        pool.reset().unwrap();
+        assert!(pool.is_empty());
+    }
     #[tokio::test]
     async fn eviction_preserves_active_and_queued_leases_and_reloads_disk() {
         let root = tempfile::tempdir().unwrap();

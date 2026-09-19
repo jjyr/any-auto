@@ -9,12 +9,12 @@ use std::{
     time::{Duration, Instant},
 };
 
-struct Host {
+struct Agent {
     root: tempfile::TempDir,
 }
-impl Host {
+impl Agent {
     fn new() -> Self {
-        let host = Self {
+        let agent = Self {
             root: tempfile::tempdir_in("/tmp").unwrap(),
         };
         for backend in ["agentapi", "agy"] {
@@ -58,26 +58,33 @@ response='"{\"outcome\":\"'"$outcome"'\",\"rationale\":\"'"$cid"'\"}"'
 printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$response"
 "#
             );
-            let path = host.root.path().join(backend);
+            let path = agent.root.path().join(backend);
             fs::write(&path, script).unwrap();
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
         }
-        host
+        agent
     }
     fn command(&self, mode: &str) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"));
-        c.args(["--mode", mode])
-            .env("HOME", self.root.path())
-            .env("PATH", self.root.path())
-            .env("AGY_APPROVER_SOCKET", self.root.path().join("a.sock"))
-            .env("AGY_APPROVER_STATE_DIR", self.root.path().join("state"))
-            .env("AGY_AUTO_APPROVE_LOG_DIR", self.root.path().join("logs"))
-            .env("AGY_AUTO_APPROVE_SILENT", "1")
-            .env_remove("AGY_AUTO_APPROVE_REVIEWER")
-            .env_remove("AGY_AUTO_APPROVE_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_CLI_MODEL")
-            .env_remove("AGY_AUTO_APPROVE_PROMPT")
-            .current_dir(self.root.path());
+        c.args([
+            "--agent",
+            match mode {
+                "cli" => "agy-cli",
+                "sidecar" => "agy-desktop",
+                other => other,
+            },
+        ])
+        .env("HOME", self.root.path())
+        .env("PATH", self.root.path())
+        .env("AGY_APPROVER_SOCKET", self.root.path().join("a.sock"))
+        .env("AGY_APPROVER_STATE_DIR", self.root.path().join("state"))
+        .env("AGY_AUTO_APPROVE_LOG_DIR", self.root.path().join("logs"))
+        .env("AGY_AUTO_APPROVE_SILENT", "1")
+        .env_remove("AGY_AUTO_APPROVE_REVIEWER")
+        .env_remove("AGY_AUTO_APPROVE_MODEL")
+        .env_remove("AGY_AUTO_APPROVE_CLI_MODEL")
+        .env_remove("AGY_AUTO_APPROVE_PROMPT")
+        .current_dir(self.root.path());
         c
     }
     fn run(&self, mode: &str, op: &str) -> Value {
@@ -90,12 +97,11 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
         serde_json::from_slice(&out.stdout).unwrap()
     }
     fn ipc(&self, mode: &str, session: Option<&str>, tag: &str) -> UnixStream {
-        let mut socket =
-            UnixStream::connect(self.root.path().join(format!("a-{mode}.sock"))).unwrap();
+        let mut socket = UnixStream::connect(self.root.path().join("a.sock")).unwrap();
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        writeln!(socket, "{}", json!({"action":"evaluate", "mode":mode, "request_id":format!("{mode}-{tag}"), "user_session_id":session, "toolCall":{"name":"run_command","args":{"CommandLine":tag}}})).unwrap();
+        writeln!(socket, "{}", json!({"action":"evaluate", "context":{"mode":mode,"instance":"default","environment":{"PATH":self.root.path().to_str().unwrap()}}, "mode":mode, "request_id":format!("{mode}-{tag}"), "user_session_id":session, "toolCall":{"name":"run_command","args":{"CommandLine":tag}}})).unwrap();
         socket
     }
     fn finish(socket: UnixStream) -> Value {
@@ -170,7 +176,7 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
         directory(&self.root.path().join("state").join(mode), id).join("reviewer_session.json")
     }
 }
-impl Drop for Host {
+impl Drop for Agent {
     fn drop(&mut self) {
         for mode in ["cli", "sidecar"] {
             let _ = self.command(mode).args(["daemon", "stop"]).output();
@@ -181,7 +187,7 @@ impl Drop for Host {
 #[test]
 fn concurrent_first_requests_share_only_their_own_session() {
     for mode in ["cli", "sidecar"] {
-        let h = Host::new();
+        let h = Agent::new();
         h.gate("new");
         h.gate("A1");
         h.run(mode, "start");
@@ -193,12 +199,12 @@ fn concurrent_first_requests_share_only_their_own_session() {
         h.release("new");
         h.wait(|| h.events().iter().any(|e| e[0] == "send" && e[2] == "A1"));
         // B must finish while A1 is blocked by a FIFO, not merely be faster than A.
-        let b = Host::finish(h.ipc(mode, Some("B"), "B1"));
+        let b = Agent::finish(h.ipc(mode, Some("B"), "B1"));
         assert_eq!(b["outcome"], "allow");
         assert!(!h.events().iter().any(|e| e[0] == "send" && e[2] == "A2"));
         h.release("A1");
-        let a1 = Host::finish(a1);
-        let a2 = Host::finish(a2);
+        let a1 = Agent::finish(a1);
+        let a2 = Agent::finish(a2);
         assert_eq!(a1["outcome"], "allow");
         assert_eq!(a2["outcome"], "allow");
         assert_eq!(a1["rationale"], a2["rationale"]);
@@ -210,7 +216,7 @@ fn concurrent_first_requests_share_only_their_own_session() {
 
 #[test]
 fn sessions_restore_retry_and_restart_with_mode_isolation() {
-    let h = Host::new();
+    let h = Agent::new();
     let mut originals = Vec::new();
     for mode in ["cli", "sidecar"] {
         h.run(mode, "start");
@@ -228,7 +234,7 @@ fn sessions_restore_retry_and_restart_with_mode_isolation() {
         originals.push((new_a, b));
     }
     assert_ne!(originals[0].0, originals[1].0);
-    h.run("cli", "restart");
+    h.run("cli", "reset");
     for id in ["A", "B"] {
         assert!(!h.session_file("cli", id).exists());
         assert!(h.session_file("sidecar", id).exists());
@@ -249,7 +255,7 @@ fn sessions_restore_retry_and_restart_with_mode_isolation() {
 #[test]
 fn hook_aliases_special_ids_and_missing_ids_do_not_share_context() {
     for mode in ["cli", "sidecar"] {
-        let h = Host::new();
+        let h = Agent::new();
         // Different raw IDs used to collide when punctuation was replaced by underscores.
         let a = h.hook(mode, Some("../../用户/a"), "conversationId", "B1");
         let again = h.hook(mode, Some("../../用户/a"), "conversation_id", "B1");
@@ -310,7 +316,7 @@ fn hook_aliases_special_ids_and_missing_ids_do_not_share_context() {
 #[test]
 fn legacy_shared_session_is_not_loaded() {
     for mode in [Mode::Cli, Mode::Sidecar] {
-        let h = Host::new();
+        let h = Agent::new();
         let base = h.root.path().join("state").join(mode.as_str());
         fs::create_dir_all(&base).unwrap();
         fs::write(
@@ -329,14 +335,14 @@ fn backend_timeout_releases_session_for_next_request() {
         .into_iter()
         .map(|mode| {
             std::thread::spawn(move || {
-                let h = Host::new();
+                let h = Agent::new();
                 h.gate("A1");
                 h.run(mode, "start");
                 let request = h.ipc(mode, Some("A"), "A1");
                 request
                     .set_read_timeout(Some(Duration::from_secs(26)))
                     .unwrap();
-                let result = Host::finish(request);
+                let result = Agent::finish(request);
                 assert_eq!(result["outcome"], "deny", "{result}");
                 assert!(
                     result["rationale"].as_str().unwrap().contains("timed out"),

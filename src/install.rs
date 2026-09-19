@@ -5,12 +5,12 @@ use dialoguer::{Confirm, MultiSelect};
 use std::{io::IsTerminal, path::PathBuf};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-pub enum Host {
+pub enum Agent {
     AgyCli,
     AgyDesktop,
     Pi,
 }
-impl Host {
+impl Agent {
     fn name(self) -> &'static str {
         match self {
             Self::AgyCli => "agy-cli",
@@ -58,12 +58,12 @@ fn executable(name: &str) -> bool {
 }
 #[derive(Args, Debug, Default)]
 pub struct Options {
-    /// Install all detected hosts without prompting.
-    #[arg(long, conflicts_with_all = ["hosts", "cli_only", "desktop_only", "pi"])]
+    /// Install all detected agents without prompting.
+    #[arg(long, conflicts_with_all = ["agents", "cli_only", "desktop_only", "pi"])]
     auto: bool,
-    /// Select hosts explicitly; comma-separated or repeated.
+    /// Select agents explicitly; comma-separated or repeated.
     #[arg(long, value_enum, value_delimiter = ',', conflicts_with_all = ["cli_only", "desktop_only", "pi"])]
-    hosts: Vec<Host>,
+    agents: Vec<Agent>,
     #[arg(long, conflicts_with_all = ["desktop_only", "pi"])]
     cli_only: bool,
     #[arg(long, conflicts_with = "pi")]
@@ -81,30 +81,30 @@ pub fn wizard() -> Result<()> {
     run_with_interaction(Options::default(), true)
 }
 fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
-    let all = [Host::AgyCli, Host::AgyDesktop, Host::Pi];
-    let mut hosts = options.hosts;
+    let all = [Agent::AgyCli, Agent::AgyDesktop, Agent::Pi];
+    let mut agents = options.agents;
     if options.cli_only {
-        hosts.push(Host::AgyCli);
+        agents.push(Agent::AgyCli);
     }
     if options.desktop_only {
-        hosts.push(Host::AgyDesktop);
+        agents.push(Agent::AgyDesktop);
     }
     if options.pi {
-        hosts.push(Host::Pi);
+        agents.push(Agent::Pi);
     }
     if interactive {
         if !std::io::stdin().is_terminal() || !std::io::stderr().is_terminal() {
             bail!(
-                "Bare install requires a terminal. Use install --auto or install --hosts agy-cli,agy-desktop,pi."
+                "Bare install requires a terminal. Use install --auto or install --agents agy-cli,agy-desktop,pi."
             );
         }
         let labels: Vec<_> = all
             .iter()
-            .map(|host| {
+            .map(|agent| {
                 format!(
                     "{} ({})",
-                    host.name(),
-                    if host.detected() {
+                    agent.name(),
+                    if agent.detected() {
                         "detected"
                     } else {
                         "not detected; pre-install"
@@ -115,41 +115,41 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
         let selected = MultiSelect::new()
             .with_prompt("Install integrations (Space selects, Enter continues)")
             .items(&labels)
-            .defaults(&all.map(Host::detected))
+            .defaults(&all.map(Agent::detected))
             .interact_opt()?;
         let Some(selected) = selected else {
             return Ok(());
         };
-        hosts = selected.into_iter().map(|i| all[i]).collect();
-        if hosts.is_empty() {
-            println!("No hosts selected; nothing changed.");
+        agents = selected.into_iter().map(|i| all[i]).collect();
+        if agents.is_empty() {
+            println!("No agents selected; nothing changed.");
             return Ok(());
         }
-    } else if hosts.is_empty() {
-        hosts = all.into_iter().filter(|host| host.detected()).collect();
+    } else if agents.is_empty() {
+        agents = all.into_iter().filter(|agent| agent.detected()).collect();
     }
-    if hosts.is_empty() {
-        bail!("No hosts detected. Use install --hosts to select an integration explicitly.");
+    if agents.is_empty() {
+        bail!("No agents detected. Use install --agents to select an integration explicitly.");
     }
-    hosts.dedup();
-    for host in &hosts {
+    agents.dedup();
+    for agent in &agents {
         println!(
             "Install {} integration{}",
-            host.name(),
-            if host.detected() {
+            agent.name(),
+            if agent.detected() {
                 ""
             } else {
-                " (host not detected)"
+                " (agent not detected)"
             }
         );
     }
     println!("Existing approver settings are preserved unless explicitly customized.");
-    let cli = hosts.contains(&Host::AgyCli);
-    let desktop = hosts.contains(&Host::AgyDesktop);
+    let cli = agents.contains(&Agent::AgyCli);
+    let desktop = agents.contains(&Agent::AgyDesktop);
     if cli || desktop {
         register::preview(!desktop, !cli)?;
     }
-    if hosts.contains(&Host::Pi) {
+    if agents.contains(&Agent::Pi) {
         let base = std::env::var_os("PI_CODING_AGENT_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| config::home().join(".pi/agent"));
@@ -163,12 +163,12 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
         return Ok(());
     }
     let staged = if interactive {
-        let modes: Vec<_> = hosts
+        let modes: Vec<_> = agents
             .iter()
             .map(|h| match h {
-                Host::AgyCli => config::Mode::Cli,
-                Host::AgyDesktop => config::Mode::Sidecar,
-                Host::Pi => config::Mode::Pi,
+                Agent::AgyCli => config::Mode::Cli,
+                Agent::AgyDesktop => config::Mode::Sidecar,
+                Agent::Pi => config::Mode::Pi,
             })
             .collect();
         crate::ui::stage_settings(&modes)?
@@ -189,29 +189,29 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     if cli || desktop {
         register::register(!desktop, !cli)?;
     }
-    if hosts.contains(&Host::Pi) {
+    if agents.contains(&Agent::Pi) {
         register::register_pi()?;
     }
     Ok(())
 }
 
 pub fn doctor() -> Result<()> {
-    for (host, mode) in [
-        (Host::AgyCli, config::Mode::Cli),
-        (Host::AgyDesktop, config::Mode::Sidecar),
-        (Host::Pi, config::Mode::Pi),
+    for (agent, mode) in [
+        (Agent::AgyCli, config::Mode::Cli),
+        (Agent::AgyDesktop, config::Mode::Sidecar),
+        (Agent::Pi, config::Mode::Pi),
     ] {
         let base = config::home().join(".gemini/config");
-        let installed = match host {
-            Host::AgyCli => std::fs::read(base.join("hooks.json"))
+        let installed = match agent {
+            Agent::AgyCli => std::fs::read(base.join("hooks.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .is_some_and(|v| v["agy-auto-approve"]["enabled"] == true),
-            Host::AgyDesktop => std::fs::read(base.join("config.json"))
+            Agent::AgyDesktop => std::fs::read(base.join("config.json"))
                 .ok()
                 .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
                 .is_some_and(|v| v["sidecars"]["agy-auto-approve/approver"]["enabled"] == true),
-            Host::Pi => std::env::var_os("PI_CODING_AGENT_DIR")
+            Agent::Pi => std::env::var_os("PI_CODING_AGENT_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| config::home().join(".pi/agent"))
                 .join("extensions/agy-auto-approve.ts")
@@ -219,12 +219,12 @@ pub fn doctor() -> Result<()> {
         };
         println!("  integration_installed={installed}");
         let settings = config::reviewer_config_for(mode);
-        println!("{}: detected={}", host.name(), host.detected());
+        println!("{}: detected={}", agent.name(), agent.detected());
         match settings {
             Ok(c) => {
                 let available = match c.approver.provider {
                     config::Provider::Pi => executable("pi"),
-                    config::Provider::Cli => Host::AgyCli.detected(),
+                    config::Provider::Cli => Agent::AgyCli.detected(),
                     config::Provider::Agentapi => {
                         std::env::var_os("ANTIGRAVITY_LS_ADDRESS").is_some()
                     }

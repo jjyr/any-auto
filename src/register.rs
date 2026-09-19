@@ -80,7 +80,7 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
             "sidecars/agy-auto-approve/approver/sidecar.json",
         ] {
             update(&base.join(relative), dry_run, |v| {
-                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","run","--mode","sidecar"]});
+                *v = json!({"name":"approver","description":"Antigravity auto-approve daemon sidecar","command":executable,"args":["daemon","start"]});
                 Ok(())
             })?;
         }

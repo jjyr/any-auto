@@ -1,12 +1,22 @@
 use std::{env, fs, path::PathBuf};
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum, serde::Serialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    Default,
+    PartialEq,
+    Eq,
+    clap::ValueEnum,
+    serde::Serialize,
+    serde::Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     #[default]
-    #[value(name = "agy-cli", alias = "cli")]
+    #[value(name = "agy-cli")]
     Cli,
-    #[value(name = "agy-desktop", alias = "sidecar")]
+    #[value(name = "agy-desktop")]
     Sidecar,
     Pi,
 }
@@ -18,7 +28,7 @@ impl Mode {
             Self::Pi => "pi",
         }
     }
-    pub fn host(self) -> &'static str {
+    pub fn agent(self) -> &'static str {
         match self {
             Self::Cli => "agy-cli",
             Self::Sidecar => "agy-desktop",
@@ -39,7 +49,9 @@ pub fn set_mode(mode: Mode) {
     MODE.set(mode).expect("mode already selected");
 }
 pub fn mode() -> Mode {
-    *MODE.get_or_init(Mode::default)
+    crate::context::current()
+        .map(|c| c.mode)
+        .unwrap_or_else(|| *MODE.get_or_init(Mode::default))
 }
 
 static INSTANCE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -56,8 +68,10 @@ pub fn set_instance(value: String) -> anyhow::Result<()> {
         .set(value)
         .map_err(|_| anyhow::anyhow!("instance already selected"))
 }
-pub fn instance() -> &'static str {
-    INSTANCE.get().map(String::as_str).unwrap_or("default")
+pub fn instance() -> String {
+    crate::context::current()
+        .map(|c| c.instance.clone())
+        .unwrap_or_else(|| INSTANCE.get().cloned().unwrap_or_else(|| "default".into()))
 }
 fn instance_suffix() -> String {
     use sha2::{Digest, Sha256};
@@ -72,10 +86,10 @@ pub fn home() -> PathBuf {
         .map(PathBuf::from)
         .expect("HOME must be set")
 }
-/// Preserve the host-injected PATH and append the CLI shim directory as a fallback.
+/// Preserve the agent-injected PATH and append the CLI shim directory as a fallback.
 /// Only applied to reviewer child processes, never to the daemon's global environment.
 pub fn backend_path() -> anyhow::Result<std::ffi::OsString> {
-    let mut paths: Vec<PathBuf> = env::var_os("PATH")
+    let mut paths: Vec<PathBuf> = crate::context::var_os("PATH")
         .map(|path| env::split_paths(&path).collect())
         .unwrap_or_default();
     let fallback = home().join(".gemini/antigravity-cli/bin");
@@ -101,22 +115,21 @@ pub fn state_dir_for(mode: Mode) -> PathBuf {
             .join("state")
             .join(format!("{}{}", mode.as_str(), instance_suffix()));
     }
-    data_dir().join("hosts").join(mode.host()).join(instance())
+    data_dir()
+        .join("agents")
+        .join(mode.agent())
+        .join(instance())
 }
 pub fn socket_path() -> PathBuf {
     socket_path_for(mode())
 }
-pub fn socket_path_for(mode: Mode) -> PathBuf {
-    let base = env::var_os("AGY_APPROVER_SOCKET")
+pub fn socket_path_for(_mode: Mode) -> PathBuf {
+    env::var_os("AGY_APPROVER_SOCKET")
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| runtime_dir().join("approver.sock"));
-    let stem = base.file_stem().unwrap_or_default().to_string_lossy();
-    base.with_file_name(format!(
-        "{stem}-{}{}.sock",
-        mode.as_str(),
-        instance_suffix()
-    ))
+        .unwrap_or_else(|| runtime_dir().join("approver.sock"))
 }
+
 fn xdg(name: &str, fallback: &str) -> PathBuf {
     env::var_os(name)
         .map(PathBuf::from)
@@ -154,7 +167,7 @@ struct FileConfig {
     #[serde(default)]
     approver: ApproverSettings,
     #[serde(default)]
-    hosts: Hosts,
+    agents: Agents,
 }
 
 #[derive(
@@ -188,19 +201,19 @@ struct ApproverSettings {
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct HostSettings {
+struct AgentSettings {
     #[serde(default)]
     approver: ApproverSettings,
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Hosts {
+struct Agents {
     #[serde(rename = "agy-cli", default)]
-    cli: HostSettings,
+    cli: AgentSettings,
     #[serde(rename = "agy-desktop", default)]
-    sidecar: HostSettings,
+    sidecar: AgentSettings,
     #[serde(default)]
-    pi: HostSettings,
+    pi: AgentSettings,
 }
 #[derive(Clone, serde::Serialize)]
 pub struct ApproverConfig {
@@ -248,7 +261,7 @@ fn resolve(
     environment: bool,
 ) -> anyhow::Result<(String, String)> {
     let variable = format!("AGY_AUTO_APPROVE_{}", name.to_uppercase());
-    if let Ok(value) = env::var(&variable)
+    if let Ok(value) = crate::context::var(&variable)
         && environment
         && !value.is_empty()
     {
@@ -275,7 +288,7 @@ fn resolve_config(
     let model = model.trim();
     anyhow::ensure!(
         matches!(model, "" | "flash_lite" | "flash" | "pro"),
-        "Invalid model {model:?} from {model_source}; expected flash_lite, flash, pro, or an empty string for the host default"
+        "Invalid model {model:?} from {model_source}; expected flash_lite, flash, pro, or an empty string for the agent default"
     );
     let (prompt, prompt_source) = resolve(
         "prompt",
@@ -289,10 +302,10 @@ fn resolve_config(
         Mode::Sidecar => Provider::Agentapi,
         Mode::Pi => Provider::Pi,
     };
-    let host = match mode {
-        Mode::Cli => file.hosts.cli.approver,
-        Mode::Sidecar => file.hosts.sidecar.approver,
-        Mode::Pi => file.hosts.pi.approver,
+    let agent = match mode {
+        Mode::Cli => file.agents.cli.approver,
+        Mode::Sidecar => file.agents.sidecar.approver,
+        Mode::Pi => file.agents.pi.approver,
     };
     let mut sources = std::collections::BTreeMap::new();
     for key in ["provider", "model", "effort", "base_url", "api_key_env"] {
@@ -304,33 +317,33 @@ fn resolve_config(
             sources.insert(key.clone(), "[approver]".into());
         }
     }
-    let host_values = serde_json::to_value(&host)?;
+    let agent_values = serde_json::to_value(&agent)?;
     let mut settings = file.approver;
-    if host.provider.is_some() && host.provider != settings.provider.or(Some(defaults)) {
+    if agent.provider.is_some() && agent.provider != settings.provider.or(Some(defaults)) {
         settings = ApproverSettings::default();
         sources.values_mut().for_each(|s| *s = "default".into());
     }
-    for (key, value) in host_values.as_object().unwrap() {
+    for (key, value) in agent_values.as_object().unwrap() {
         if !value.is_null() {
-            sources.insert(key.clone(), format!("[hosts.{}.approver]", mode.host()));
+            sources.insert(key.clone(), format!("[agents.{}.approver]", mode.agent()));
         }
     }
-    if host.provider.is_some() {
-        settings.provider = host.provider;
+    if agent.provider.is_some() {
+        settings.provider = agent.provider;
     }
-    if host.model.is_some() {
-        settings.model = host.model;
+    if agent.model.is_some() {
+        settings.model = agent.model;
     }
-    if host.effort.is_some() {
-        settings.effort = host.effort;
+    if agent.effort.is_some() {
+        settings.effort = agent.effort;
     }
-    if host.base_url.is_some() {
-        settings.base_url = host.base_url;
+    if agent.base_url.is_some() {
+        settings.base_url = agent.base_url;
     }
-    if host.api_key_env.is_some() {
-        settings.api_key_env = host.api_key_env;
+    if agent.api_key_env.is_some() {
+        settings.api_key_env = agent.api_key_env;
     }
-    if let Ok(value) = env::var("AGY_AUTO_APPROVE_PROVIDER")
+    if let Ok(value) = crate::context::var("AGY_AUTO_APPROVE_PROVIDER")
         && environment
         && !value.is_empty()
     {
@@ -364,16 +377,16 @@ fn resolve_config(
         ("model", "AGY_AUTO_APPROVE_APPROVER_MODEL"),
         ("effort", "AGY_AUTO_APPROVE_EFFORT"),
     ] {
-        if environment && env::var(var).is_ok_and(|v| !v.is_empty()) {
+        if environment && crate::context::var(var).is_ok_and(|v| !v.is_empty()) {
             sources.insert(key.into(), var.into());
         }
     }
-    let selected_model = env::var("AGY_AUTO_APPROVE_APPROVER_MODEL")
+    let selected_model = crate::context::var("AGY_AUTO_APPROVE_APPROVER_MODEL")
         .ok()
         .filter(|v| environment && !v.is_empty())
         .or(settings.model)
         .unwrap_or_else(|| legacy_model.into());
-    let effort = env::var("AGY_AUTO_APPROVE_EFFORT")
+    let effort = crate::context::var("AGY_AUTO_APPROVE_EFFORT")
         .ok()
         .filter(|v| environment && !v.is_empty())
         .or(settings.effort)
@@ -440,7 +453,7 @@ pub fn show(json: bool) -> anyhow::Result<()> {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "file": config_path(), "reviewer": config, "mode": mode(), "host":mode().host(), "instance":instance(),
+                "file": config_path(), "reviewer": config, "mode": mode(), "agent":mode().agent(), "instance":instance(),
                 "socket": socket_path(), "state_dir": state_dir(), "log_dir": log_dir()
             }))?
         );
@@ -448,15 +461,15 @@ pub fn show(json: bool) -> anyhow::Result<()> {
         println!("Config: {}", config_path().display());
         println!(
             "Model: {} ({})",
-            config.model.as_deref().unwrap_or("host default"),
+            config.model.as_deref().unwrap_or("agent default"),
             config.model_source
         );
         println!(
             "CLI model: {} ({})",
-            config.cli_model.as_deref().unwrap_or("host default"),
+            config.cli_model.as_deref().unwrap_or("agent default"),
             config.cli_model_source
         );
-        println!("Host: {}", mode().host());
+        println!("Agent: {}", mode().agent());
         println!("Approver: {}", serde_json::to_string(&config.approver)?);
         println!(
             "Sources: {}",
@@ -470,7 +483,7 @@ pub fn show(json: bool) -> anyhow::Result<()> {
             log_dir().display()
         );
         println!(
-            "File changes apply on the next review with a new configuration generation. Restart the daemon after changing its environment."
+            "File changes apply on the next review with a new configuration generation. Caller environment changes apply on the next review."
         );
     }
     Ok(())
@@ -491,7 +504,7 @@ pub fn edit() -> anyhow::Result<()> {
             .open(&path)?;
         writeln!(
             file,
-            "# Optional common settings; omit to use each host's defaults.\n# [approver]\n# provider = \"pi\"\n# model = \"provider/model-id\"\n# effort = \"low\"\n\n# Optional per-host override:\n# [hosts.pi.approver]\n# provider = \"pi\"\n# effort = \"low\"\n\n# A top-level prompt string can replace the built-in review policy.\n# Environment variables override file settings."
+            "# Optional common settings; omit to use each agent's defaults.\n# [approver]\n# provider = \"pi\"\n# model = \"provider/model-id\"\n# effort = \"low\"\n\n# Optional per-agent override:\n# [agents.pi.approver]\n# provider = \"pi\"\n# effort = \"low\"\n\n# A top-level prompt string can replace the built-in review policy.\n# Environment variables override file settings."
         )?;
     }
     let editor = ["VISUAL", "EDITOR"]
@@ -517,15 +530,15 @@ pub fn edit() -> anyhow::Result<()> {
     }
     validate_text(&fs::read_to_string(&path)?)?;
     eprintln!(
-        "Saved configuration. File changes apply on the next review. Restart the daemon after changing its environment."
+        "Saved configuration. File changes apply on the next review. Caller environment changes apply on the next review."
     );
     Ok(())
 }
 
-/// Validate all hosts before saving a staged configuration.
+/// Validate all agents before saving a staged configuration.
 pub fn validate_text(text: &str) -> anyhow::Result<()> {
-    for host in [Mode::Cli, Mode::Sidecar, Mode::Pi] {
-        resolve_config(host, toml::from_str(text)?, false)?;
+    for agent in [Mode::Cli, Mode::Sidecar, Mode::Pi] {
+        resolve_config(agent, toml::from_str(text)?, false)?;
     }
     Ok(())
 }
@@ -543,25 +556,31 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
     if selected.is_some() {
         return show(json);
     }
-    let hosts: Vec<_> = [Mode::Cli, Mode::Sidecar, Mode::Pi]
+    let agents: Vec<_> = [Mode::Cli, Mode::Sidecar, Mode::Pi]
         .into_iter()
-        .map(|host| {
-            reviewer_config_for(host)
-                .map(|c| serde_json::json!({"host":host.host(), "approver":c.approver, "sources":c.approver_sources}))
+        .map(|agent| {
+            reviewer_config_for(agent)
+                .map(|c| serde_json::json!({"agent":agent.agent(), "approver":c.approver, "sources":c.approver_sources}))
         })
         .collect::<anyhow::Result<_>>()?;
     if json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({"file":config_path(),"hosts":hosts}))?
+            serde_json::to_string_pretty(
+                &serde_json::json!({"file":config_path(),"agents":agents})
+            )?
         );
     } else {
         println!("Config: {}", config_path().display());
-        for host in hosts {
-            println!("{}: {}", host["host"].as_str().unwrap(), host["approver"]);
-            println!("  sources: {}", host["sources"]);
+        for agent in agents {
+            println!(
+                "{}: {}",
+                agent["agent"].as_str().unwrap(),
+                agent["approver"]
+            );
+            println!("  sources: {}", agent["sources"]);
         }
-        println!("Precedence: defaults < [approver] < [hosts.NAME.approver] < environment");
+        println!("Precedence: defaults < [approver] < [agents.NAME.approver] < environment");
     }
     Ok(())
 }

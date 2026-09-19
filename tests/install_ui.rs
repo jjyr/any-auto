@@ -18,15 +18,15 @@ fn bare_install_without_terminal_fails_without_writes() {
 fn explicit_dry_run_never_writes_or_prompts() {
     let home = tempfile::tempdir().unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"))
-        .args(["install", "--hosts", "agy-cli,agy-desktop,pi", "--dry-run"])
+        .args(["install", "--agents", "agy-cli,agy-desktop,pi", "--dry-run"])
         .env("HOME", home.path())
         .stdin(Stdio::null())
         .output()
         .unwrap();
     assert!(output.status.success(), "{:?}", output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for host in ["agy-cli", "agy-desktop", "pi"] {
-        assert!(stdout.contains(&format!("Install {host} integration")));
+    for agent in ["agy-cli", "agy-desktop", "pi"] {
+        assert!(stdout.contains(&format!("Install {agent} integration")));
     }
     assert!(!home.path().join(".gemini").exists());
     assert!(!home.path().join(".pi").exists());
@@ -39,7 +39,7 @@ fn invalid_desktop_configuration_does_not_partially_install_cli() {
     std::fs::create_dir_all(&config).unwrap();
     std::fs::write(config.join("config.json"), r#"{"sidecars":false}"#).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_agy-auto-approve"))
-        .args(["install", "--hosts", "agy-cli,agy-desktop"])
+        .args(["install", "--agents", "agy-cli,agy-desktop"])
         .env("HOME", home.path())
         .stdin(Stdio::null())
         .output()

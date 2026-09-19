@@ -9,12 +9,12 @@ See [configuration](configuration.md) for provider selection and
 `~/.gemini/config/config.json` and writes manifests under
 `~/.gemini/config/sidecars/approver/sidecar.json` and
 `sidecars/agy-auto-approve/approver/sidecar.json`. The launch command is the absolute
-binary path with `daemon run --mode sidecar`. Hook registration is shared by agy
+binary path with `daemon start`, an idempotent bootstrap that detaches the shared daemon. Hook registration is shared by agy
 CLI/Desktop; `ANTIGRAVITY_LS_ADDRESS` selects Desktop unless overridden.
 
-agentapi requires the host's connection environment, including its address/token;
+agentapi requires the agent's connection environment, including its address/token;
 finding the executable alone does not supply a connection. Different Desktop
-connections should use distinct `--instance` values in daemon and hook commands.
+connections should use distinct `--instance` values on hook requests. All use one daemon.
 A daemon never mutates its global environment to service another connection.
 
 Each conversation has isolated reviewer state; same-conversation requests
@@ -24,7 +24,7 @@ denials (or four of the last five) trip the circuit breaker and request user
 review. Reviewer/infrastructure failures deny the action. Reviewer subprocesses
 cannot recursively approve tool calls.
 
-Restart the Desktop host after installation/update to reload its sidecar.
-An explicit daemon restart resets that instance's reviewer cache but retains
-circuit breakers. Shared daily audit logs record host, provider and instance;
+Restart the Desktop agent after installation/update to reload its sidecar.
+`daemon reset --agent agy-desktop --instance NAME` resets that instance's reviewer cache
+but retains circuit breakers. Restart preserves persisted sessions. Shared daily audit logs record agent, provider and instance;
 logs and stats need no running daemon.

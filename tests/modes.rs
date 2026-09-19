@@ -6,22 +6,22 @@ use std::{
     process::{Command, Stdio},
 };
 
-struct Host {
+struct Agent {
     dir: tempfile::TempDir,
 }
-impl Host {
+impl Agent {
     fn new() -> Self {
-        let host = Self {
+        let agent = Self {
             dir: tempfile::tempdir_in("/tmp").unwrap(),
         };
-        host.mock("agentapi", r#"
+        agent.mock("agentapi", r#"
 case "$1" in
  new-conversation) echo '{"conversationId":"sidecar-session"}';;
  send-message) [ "$2" = sidecar-session ] || exit 2; echo '{"response":"{\"outcome\":\"allow\",\"rationale\":\"sidecar\"}"}';;
  *) exit 3;;
 esac
 "#);
-        host.mock("agy", r#"
+        agent.mock("agy", r#"
 [ "$AGY_AUTO_APPROVE_REVIEWER" = 1 ] || exit 4
 [ -z "$ANTIGRAVITY_LS_ADDRESS" ] || exit 5
 case "$PWD" in */state/cli/sessions/*/workspace) ;; *) exit 6;; esac
@@ -42,7 +42,7 @@ else
  echo '{"status":"SUCCESS","conversation_id":"cli-session","response":"{\"outcome\":\"allow\",\"rationale\":\"cli\"}"}'
 fi
 "#);
-        host
+        agent
     }
     fn mock(&self, name: &str, script: &str) {
         let path = self.dir.path().join(name);
@@ -74,13 +74,20 @@ fi
         );
         serde_json::from_slice(&out.stdout).unwrap()
     }
-    fn hook(&self, mode: Option<&str>, host_env: bool) -> Value {
+    fn hook(&self, mode: Option<&str>, agent_env: bool) -> Value {
         let mut cmd = self.command();
         cmd.arg("hook");
         if let Some(mode) = mode {
-            cmd.args(["--mode", mode]);
+            cmd.args([
+                "--agent",
+                match mode {
+                    "cli" => "agy-cli",
+                    "sidecar" => "agy-desktop",
+                    other => other,
+                },
+            ]);
         }
-        if host_env {
+        if agent_env {
             cmd.env("ANTIGRAVITY_LS_ADDRESS", "localhost:1234");
         }
         let mut child = cmd
@@ -94,20 +101,29 @@ fi
         serde_json::from_slice(&out.stdout).unwrap()
     }
 }
-impl Drop for Host {
+impl Drop for Agent {
     fn drop(&mut self) {
         for mode in ["cli", "sidecar"] {
             let _ = self
                 .command()
-                .args(["daemon", "stop", "--mode", mode])
+                .args([
+                    "daemon",
+                    "stop",
+                    "--agent",
+                    match mode {
+                        "cli" => "agy-cli",
+                        "sidecar" => "agy-desktop",
+                        other => other,
+                    },
+                ])
                 .output();
         }
     }
 }
 
 #[test]
-fn dual_daemons_route_reuse_and_restart_independently() {
-    let h = Host::new();
+fn shared_daemon_routes_agents_and_resets_independently() {
+    let h = Agent::new();
     fs::create_dir_all(h.dir.path().join("state")).unwrap();
     fs::write(
         h.dir.path().join("state/reviewer_session.json"),
@@ -127,11 +143,11 @@ fn dual_daemons_route_reuse_and_restart_independently() {
             .contains("sidecar")
     );
     let cli = h.run(&["daemon", "status"]);
-    let sidecar = h.run(&["daemon", "status", "--mode", "sidecar"]);
-    assert_eq!(cli["mode"], "cli");
-    assert_eq!(sidecar["mode"], "sidecar");
-    assert_ne!(cli["pid"], sidecar["pid"]);
-    assert_ne!(cli["socket"], sidecar["socket"]);
+    let sidecar = h.run(&["daemon", "status", "--agent", "agy-desktop"]);
+    assert_eq!(cli["instances"].as_array().unwrap().len(), 2);
+    assert_eq!(sidecar["instances"][0]["agent"], "agy-desktop");
+    assert_eq!(cli["pid"], sidecar["pid"]);
+    assert_eq!(cli["socket"], sidecar["socket"]);
     assert_eq!(h.run(&["daemon", "start"])["pid"], cli["pid"]);
     assert_eq!(h.hook(Some("cli"), true)["decision"], "allow");
     assert_eq!(h.hook(Some("sidecar"), false)["decision"], "allow");
@@ -145,9 +161,9 @@ fn dual_daemons_route_reuse_and_restart_independently() {
     for mode in ["cli", "sidecar"] {
         assert!(h.dir.path().join(format!("state/{mode}/sessions")).exists());
     }
-    h.run(&["daemon", "restart", "--mode", "cli"]);
+    h.run(&["daemon", "reset", "--agent", "agy-cli"]);
     assert_eq!(
-        h.run(&["daemon", "status", "--mode", "sidecar"])["pid"],
+        h.run(&["daemon", "status", "--agent", "agy-desktop"])["pid"],
         sidecar["pid"]
     );
     assert!(
@@ -192,7 +208,7 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
         "echo '{\"status\":\"SUCCESS\",\"response\":\"missing session\"}'",
         "echo '{\"status\":\"SUCCESS\",\"conversation_id\":\"bad\",\"response\":{\"outcome\":\"allow\"}}'",
     ] {
-        let h = Host::new();
+        let h = Agent::new();
         h.mock("agy", body);
         for _ in 0..3 {
             assert_eq!(h.hook(None, false)["decision"], "deny");
@@ -204,7 +220,7 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
 
 #[test]
 fn cli_model_and_prompt_are_passed_as_single_arguments() {
-    let h = Host::new();
+    let h = Agent::new();
     let config = h.dir.path().join(".config/agy-auto-approve");
     fs::create_dir_all(&config).unwrap();
     fs::write(config.join("config.toml"), "model = 'pro'\ncli_model = 'gemini-3.8-flash-high'\nprompt = 'custom $(do-not-execute) prompt'\n").unwrap();
@@ -218,9 +234,9 @@ fn cli_model_and_prompt_are_passed_as_single_arguments() {
 
 #[test]
 fn cli_cached_session_failure_recreates_only_cli_session() {
-    let h = Host::new();
+    let h = Agent::new();
     assert_eq!(h.hook(None, false)["decision"], "allow");
-    h.run(&["daemon", "stop", "--mode", "cli"]);
+    h.run(&["daemon", "stop", "--agent", "agy-cli"]);
     let path = agy_auto_approve::sessions::directory(
         &h.dir.path().join("state/cli"),
         "same-user-conversation",
@@ -260,9 +276,9 @@ fn ipc_rejects_mode_mismatch() {
         io::{BufRead, BufReader},
         os::unix::net::UnixStream,
     };
-    let h = Host::new();
+    let h = Agent::new();
     h.run(&["daemon", "start"]);
-    let mut stream = UnixStream::connect(h.dir.path().join("a-cli.sock")).unwrap();
+    let mut stream = UnixStream::connect(h.dir.path().join("a.sock")).unwrap();
     stream
         .write_all(b"{\"action\":\"evaluate\",\"mode\":\"sidecar\"}\n")
         .unwrap();
@@ -275,7 +291,7 @@ fn ipc_rejects_mode_mismatch() {
 
 #[test]
 fn stats_tracks_initialization_resume_and_persisted_baseline_after_restart() {
-    let h = Host::new();
+    let h = Agent::new();
     h.mock("agy", r#"
 resume=no
 while [ "$#" -gt 0 ]; do
@@ -288,11 +304,11 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
 "#);
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
-    h.run(&["daemon", "stop", "--mode", "cli"]);
+    h.run(&["daemon", "stop", "--agent", "agy-cli"]);
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
     let out = h
         .command()
-        .args(["stats", "--mode", "cli", "--no-group"])
+        .args(["stats", "--agent", "agy-cli", "--no-group"])
         .output()
         .unwrap();
     assert!(
@@ -361,8 +377,58 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     }
     let cli = h
         .command()
-        .args(["stats", "--mode", "cli", "--no-group"])
+        .args(["stats", "--agent", "agy-cli", "--no-group"])
         .output()
         .unwrap();
     assert!(!String::from_utf8(cli.stdout).unwrap().contains("N/A"));
+}
+
+#[test]
+fn shared_daemon_keeps_desktop_connection_environments_private() {
+    let h = Agent::new();
+    h.mock(
+        "agentapi",
+        r#"
+case "$ANTIGRAVITY_LS_ADDRESS:$ANTIGRAVITY_CSRF_TOKEN" in
+ connection-one:secret-one) cid=one;;
+ connection-two:secret-two) cid=two;;
+ *) exit 8;;
+esac
+case "$1" in
+ new-conversation) printf '{"conversationId":"%s"}\n' "$cid";;
+ send-message) [ "$2" = "$cid" ] || exit 9; printf '{"outcome":"allow","rationale":"%s"}\n' "$cid";;
+esac
+"#,
+    );
+    let pid = h.run(&["daemon", "start"])["pid"].clone();
+    let mut children = Vec::new();
+    for (instance, address, token) in [
+        ("one", "connection-one", "secret-one"),
+        ("two", "connection-two", "secret-two"),
+    ] {
+        let mut child = h
+            .command()
+            .args(["hook", "--agent", "agy-desktop", "--instance", instance])
+            .env("ANTIGRAVITY_LS_ADDRESS", address)
+            .env("ANTIGRAVITY_CSRF_TOKEN", token)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"conversationId":"same","toolCall":{"name":"run_command","args":{"CommandLine":"cargo test"}},"workspacePaths":[]}"#).unwrap();
+        children.push(child);
+    }
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["decision"], "allow", "{value}");
+    }
+    let status = h.run(&["daemon", "status"]);
+    assert_eq!(status["pid"], pid);
+    assert_eq!(status["instances"].as_array().unwrap().len(), 2);
+    let logs = h.run(&["logs", "--no-group", "--json"]);
+    assert!(!logs.to_string().contains("secret-one"));
+    assert!(!logs.to_string().contains("secret-two"));
+    assert_eq!(logs.as_array().unwrap().len(), 2);
 }
