@@ -217,7 +217,11 @@ pub async fn evaluate(payload: &Value) -> Value {
             )
         }
     };
-    output["request_id"] = json!(id);
+    // Antigravity parses hook responses with strict protojson. Only Pi's
+    // extension accepts this correlation field for human confirmation.
+    if config::mode() == config::Mode::Pi {
+        output["request_id"] = json!(id);
+    }
     audit::record(
         &id,
         "hook_result",
