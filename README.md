@@ -1,20 +1,25 @@
 # any-auto
 
-Automatic approval for Antigravity CLI/Desktop and Pi. A shared Rust approval
-pipeline supports agy CLI, agentapi, persistent Pi RPC, and OpenAI Responses
-reviewers. Defaults need no configuration: agy uses its existing backend and Pi
-uses a separate, tool-disabled Pi RPC session. One daemon serves all agents and instances with isolated reviewer
-sessions; logs and statistics can be grouped across them.
+[![crates.io](https://img.shields.io/crates/v/any-auto.svg)](https://crates.io/crates/any-auto)
+[![CI](https://github.com/jjyr/any-auto/actions/workflows/ci.yml/badge.svg)](https://github.com/jjyr/any-auto/actions/workflows/ci.yml)
 
-| Agent | Default approver backend |
-| --- | --- |
-| Antigravity CLI | `cli` (agy CLI) |
-| Antigravity Desktop | `cli` (agy CLI) |
-| Pi | `pi` (persistent RPC) |
+Auto-approve for Antigravity (agy) and Pi, powered by the AI backend of your choice.
 
-The agent is where approval requests originate. The approver backend decides them;
-it can differ from the agent. Pi's model provider (such as Anthropic) is a separate
-choice encoded in the model ID.
+```text
+ Coding agents           Auto-approve           Reviewer backends
+
++-------------------+    +--------------+    +-----------------------+
+| agy CLI / Desktop |--->|              |--->| CLI: agy or Pi        |
+|                   |    | any-auto     |    |                       |
+| Pi                |--->|              |--->| API: OpenAI Responses |
++-------------------+    +--------------+    +-----------------------+
+```
+
+Automatically review tool requests and approve them when appropriate, so your
+agent can keep working with fewer interruptions.
+
+Choose your reviewer backend independently of your coding agent: use Pi to review
+agy requests, agy to review Pi requests, or an API backend for either.
 
 ## How it works
 
