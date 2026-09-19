@@ -17,7 +17,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     net::{UnixListener, UnixStream},
     sync::{Mutex, Notify},
 };
@@ -62,7 +62,14 @@ pub async fn start() -> Result<Value> {
     }
     let mut command = Command::new(std::env::current_exe()?);
     command
-        .args(["daemon", "run", "--mode", config::mode().as_str()])
+        .args([
+            "daemon",
+            "run",
+            "--mode",
+            config::mode().as_str(),
+            "--instance",
+            config::instance(),
+        ])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -175,6 +182,7 @@ struct State {
     requests: AtomicU64,
     active: AtomicU64,
     idle_timeout: u64,
+    concurrency: tokio::sync::Semaphore,
 }
 async fn handle(stream: UnixStream, state: Arc<State>) {
     let mut stream = BufReader::new(stream);
@@ -184,7 +192,7 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
         *state.last_active.lock().await = Instant::now();
         match req["action"].as_str().unwrap_or("") {
             "ping" | "status" => Ok(json!({"status": if req["action"] == "ping" {"pong"} else {"running"},
-                "mode":config::mode(), "pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
+                "mode":config::mode(), "host":config::mode().host(), "instance":config::instance(), "pid":std::process::id(), "socket":config::socket_path(), "version":env!("CARGO_PKG_VERSION"),
                 "uptime_seconds":state.started.elapsed().as_secs(), "idle_timeout_seconds":state.idle_timeout,
                 "cached_sessions":state.sessions.len(), "evaluations":state.requests.load(Ordering::Relaxed), "active_evaluations":state.active.load(Ordering::Relaxed)})),
             "stop" => Ok(json!({"status":"stopping"})),
@@ -192,10 +200,13 @@ async fn handle(stream: UnixStream, state: Arc<State>) {
                 anyhow::ensure!(req["mode"] == json!(config::mode()), "Review mode does not match daemon mode");
                 state.requests.fetch_add(1, Ordering::Relaxed);
                 state.active.fetch_add(1, Ordering::Relaxed);
-                let evaluation = tokio::time::timeout(Duration::from_secs(24), async {
+                let evaluation = tokio::select! { result = tokio::time::timeout(Duration::from_secs(24), async {
+                    let _permit = state.concurrency.acquire().await?;
                     let session = state.sessions.acquire(req["user_session_id"].as_str().filter(|id| !id.trim().is_empty()))?;
                     Ok::<_, anyhow::Error>(session.evaluate(&req).await)
-                }).await;
+                }) => result,
+                _ = stream.read_u8() => Ok(Ok(Assessment::deny("Approval caller disconnected"))),
+                };
                 let evaluation = match evaluation {
                     Ok(Ok(assessment)) => assessment,
                     Ok(Err(e)) => Assessment::deny(format!("Cannot acquire reviewer session: {e:#}")),
@@ -263,6 +274,7 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
         requests: AtomicU64::new(0),
         active: AtomicU64::new(0),
         idle_timeout,
+        concurrency: tokio::sync::Semaphore::new(4),
     });
     let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
     let mut tick = tokio::time::interval(Duration::from_secs(1));
@@ -284,4 +296,40 @@ pub async fn run(idle_timeout: u64) -> Result<()> {
     clients.abort_all();
     while clients.join_next().await.is_some() {}
     Ok(())
+}
+
+/// Query only sockets in the configured approver namespace, including instances.
+pub async fn status_all() -> Result<Value> {
+    let socket = config::socket_path_for(config::Mode::Cli);
+    let parent = socket.parent().context("Socket has no directory")?;
+    let filename = socket.file_name().unwrap().to_string_lossy();
+    let prefix = filename
+        .rsplit_once("-cli")
+        .map(|(prefix, _)| format!("{prefix}-"))
+        .context("Invalid socket name")?;
+    let mut paths = Vec::new();
+    match fs::read_dir(parent) {
+        Ok(entries) => {
+            for entry in entries {
+                let entry = entry?;
+                if entry.file_type()?.is_socket()
+                    && entry.file_name().to_string_lossy().starts_with(&prefix)
+                {
+                    paths.push(entry.path());
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    paths.sort();
+    let mut statuses = Vec::new();
+    for path in paths {
+        if let Ok(status) = request(&path, &json!({"action":"status"}), 1).await
+            && status["status"] == "running"
+        {
+            statuses.push(status);
+        }
+    }
+    Ok(json!(statuses))
 }

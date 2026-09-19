@@ -189,14 +189,20 @@ pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<Strin
     v
 }
 pub async fn evaluate(payload: &Value) -> Value {
-    let id = audit::request_id();
+    let id = payload["request_id"]
+        .as_str()
+        .filter(|s| s.len() <= 128 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        .map(str::to_owned)
+        .unwrap_or_else(audit::request_id);
+    let payload = &normalize(payload);
     let started = std::time::Instant::now();
     audit::record(&id, "hook_input", json!({"input":payload}));
     let mut stage = "reviewer";
+    let mut reviewer = Value::Null;
     // Includes waiting for this user's circuit breaker lock and daemon startup/review.
-    let output = match tokio::time::timeout(
+    let mut output = match tokio::time::timeout(
         std::time::Duration::from_secs(28),
-        evaluate_inner(payload, &id, &mut stage),
+        evaluate_inner(payload, &id, &mut stage, &mut reviewer),
     )
     .await
     {
@@ -211,22 +217,28 @@ pub async fn evaluate(payload: &Value) -> Value {
             )
         }
     };
+    output["request_id"] = json!(id);
     audit::record(
         &id,
         "hook_result",
-        json!({"tool":payload["toolCall"]["name"],
+        json!({"tool":payload.get("original_tool").unwrap_or(&payload["toolCall"])["name"],
         "command":payload["toolCall"]["args"]["CommandLine"],
         "cwd":payload["toolCall"]["args"]["Cwd"],
         "hook_pid":std::process::id(),
         "conversation_id":conversation_id(payload), "output":output, "stage":stage,
-        "duration_ms":started.elapsed().as_millis()}),
+        "duration_ms":started.elapsed().as_millis(), "reviewer":reviewer}),
     );
     output
 }
 fn conversation_id(payload: &Value) -> &str {
     crate::sessions::user_session_id(payload).unwrap_or("default")
 }
-async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> Value {
+async fn evaluate_inner(
+    payload: &Value,
+    id: &str,
+    stage: &mut &'static str,
+    reviewer: &mut Value,
+) -> Value {
     let tool = payload["toolCall"]["name"].as_str().unwrap_or("");
     if std::env::var_os("AGY_AUTO_APPROVE_REVIEWER").is_some() {
         *stage = "reviewer_recursion";
@@ -282,6 +294,7 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
             Assessment::deny(format!("Approver daemon/backend is unavailable: {e}"))
         }
     };
+    *reviewer = assessment.reviewer.clone().unwrap_or(Value::Null);
     audit::record(id, "assessment", json!({"assessment":assessment}));
     if assessment.error_stage.is_some() {
         *stage = "reviewer_error";
@@ -301,6 +314,32 @@ async fn evaluate_inner(payload: &Value, id: &str, stage: &mut &'static str) -> 
     }
     let grants = (assessment.outcome == "allow").then(|| parser::overrides(tool, args));
     result(&assessment.outcome, &assessment.rationale, tool, grants)
+}
+
+fn normalize(payload: &Value) -> Value {
+    let mut value = payload.clone();
+    if config::mode() == config::Mode::Pi {
+        value["original_tool"] = payload["toolCall"].clone();
+        let name = payload["toolCall"]["name"].as_str().unwrap_or("");
+        if name == "bash" {
+            value["toolCall"]["name"] = json!("run_command");
+            value["toolCall"]["args"]["CommandLine"] =
+                payload["toolCall"]["args"]["command"].clone();
+            value["toolCall"]["args"]["Cwd"] = payload["workspacePaths"][0].clone();
+        } else if payload["builtin_tool"] == true {
+            let mapped = match name {
+                "read" => "view_file",
+                "grep" => "grep_search",
+                "find" => "find_by_name",
+                "ls" => "list_dir",
+                _ => name,
+            };
+            value["toolCall"]["name"] = json!(mapped);
+        } else {
+            value["toolCall"]["name"] = json!(format!("pi:{name}"));
+        }
+    }
+    value
 }
 
 #[cfg(test)]

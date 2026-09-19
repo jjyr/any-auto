@@ -1,9 +1,11 @@
 //! Session-oriented backend interface, independent of executable and response format.
 mod agentapi;
 mod agy;
+mod openai;
+mod pi;
 mod process;
 
-use crate::config::{Mode, ReviewerConfig};
+use crate::config::{Provider, ReviewerConfig};
 pub use agentapi::AgentApiBackend;
 pub use agy::AgyBackend;
 use anyhow::{Context, Result};
@@ -19,10 +21,12 @@ pub trait Backend: Send + Sync {
     -> BackendFuture<'a>;
 }
 
-pub fn for_mode(mode: Mode, workspace: PathBuf) -> Box<dyn Backend> {
-    match mode {
-        Mode::Sidecar => Box::new(AgentApiBackend),
-        Mode::Cli => Box::new(AgyBackend::new(workspace)),
+pub fn for_config(config: &ReviewerConfig, workspace: PathBuf) -> Box<dyn Backend> {
+    match config.approver.provider {
+        Provider::Agentapi => Box::new(AgentApiBackend),
+        Provider::Cli => Box::new(AgyBackend::new(workspace, config.clone())),
+        Provider::Pi => Box::new(pi::PiBackend::new(workspace, config.clone())),
+        Provider::Openai => Box::new(openai::OpenAiBackend::new(workspace, config.clone())),
     }
 }
 

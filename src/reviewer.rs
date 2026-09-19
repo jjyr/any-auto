@@ -12,6 +12,8 @@ pub struct Assessment {
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_stage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<Value>,
 }
 impl Assessment {
     pub fn deny(reason: impl std::fmt::Display) -> Self {
@@ -21,6 +23,7 @@ impl Assessment {
             user_authorization: "unknown".into(),
             rationale: format!("Fail-closed: {reason}"),
             error_stage: Some("reviewer".into()),
+            reviewer: None,
         }
     }
 }
@@ -69,6 +72,7 @@ pub fn parse(raw: &str) -> Assessment {
     let allow = outcome == "allow";
     Assessment {
         error_stage: None,
+        reviewer: None,
         outcome,
         risk_level: v["risk_level"]
             .as_str()
@@ -123,7 +127,10 @@ pub fn script_content(cmd: &str, workspaces: &[Value]) -> String {
     String::new()
 }
 pub struct Bridge {
-    backend: Box<dyn crate::backend::Backend>,
+    backend: Option<Box<dyn crate::backend::Backend>>,
+    mode: config::Mode,
+    fingerprint: Option<String>,
+    settings: Option<config::ReviewerConfig>,
     pub conversation_id: Option<String>,
     path: PathBuf,
     temporary: Option<tempfile::TempDir>,
@@ -152,7 +159,10 @@ impl Bridge {
             .filter(|s| !s.is_empty())
             .map(str::to_owned);
         Self {
-            backend: crate::backend::for_mode(mode, directory.join("workspace")),
+            backend: None,
+            mode,
+            fingerprint: data["config_fingerprint"].as_str().map(str::to_owned),
+            settings: None,
             temporary,
             conversation_id,
             path,
@@ -169,8 +179,16 @@ impl Bridge {
             );
             return Ok(cid.clone());
         }
-        let config = config::reviewer_config()?;
-        let cid = self.backend.create_session(&config, id).await?;
+        let config = self
+            .settings
+            .as_ref()
+            .context("Reviewer settings unavailable")?;
+        let cid = self
+            .backend
+            .as_ref()
+            .context("Reviewer backend unavailable")?
+            .create_session(config, id)
+            .await?;
         audit::record(
             id,
             "reviewer_session",
@@ -192,6 +210,7 @@ impl Bridge {
                 state = json!({});
             }
             state["conversationId"] = cid.clone().into();
+            state["config_fingerprint"] = serde_json::json!(self.fingerprint);
             crate::usage::save(&self.path, &state).with_context(|| {
                 format!("Cannot save reviewer session to {}", self.path.display())
             })?;
@@ -201,9 +220,50 @@ impl Bridge {
     }
     async fn send(&mut self, payload: &str, id: &str) -> Result<String> {
         let cid = self.session(id).await?;
-        self.backend.send_message(&cid, payload, id).await
+        self.backend
+            .as_ref()
+            .context("Reviewer backend unavailable")?
+            .send_message(&cid, payload, id)
+            .await
+    }
+    fn configure(&mut self) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let config = config::reviewer_config_for(self.mode)?;
+        let fingerprint = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(
+                &serde_json::json!({"approver":config.approver,"prompt":config.prompt})
+            )?)
+        );
+        if self.fingerprint.as_ref() != Some(&fingerprint) {
+            self.conversation_id = None;
+            self.backend = None;
+            let _ = std::fs::remove_file(&self.path);
+        }
+        if self.backend.is_none() {
+            let workspace = self
+                .path
+                .parent()
+                .unwrap()
+                .join("workspace")
+                .join(&fingerprint[..16]);
+            // Keep the established agy workspace path; Pi/API sessions live under a config generation.
+            let workspace = if config.approver.provider == config::Provider::Cli {
+                self.path.parent().unwrap().join("workspace")
+            } else {
+                workspace
+            };
+            self.backend = Some(crate::backend::for_config(&config, workspace));
+        }
+        self.fingerprint = Some(fingerprint);
+        self.settings = Some(config);
+        Ok(())
     }
     pub async fn evaluate(&mut self, req: &Value) -> Assessment {
+        if let Err(e) = self.configure() {
+            return Assessment::deny(format!("Invalid reviewer configuration: {e:#}"));
+        }
+
         let generated_id = audit::request_id();
         let id = req["request_id"].as_str().unwrap_or(&generated_id);
         let ws = req["workspacePaths"]
@@ -246,10 +306,15 @@ impl Bridge {
             let _ = std::fs::remove_file(&self.path);
             result = self.send(&payload, id).await;
         }
-        let assessment = match result {
+        let mut assessment = match result {
             Ok(raw) => parse(&raw),
             Err(err) => Assessment::deny(format!("Approver review failed: {err:#}")),
         };
+        if let Some(settings) = &self.settings {
+            assessment.reviewer = Some(
+                json!({"provider":settings.approver.provider,"model":settings.approver.model,"effort_requested":settings.approver.effort}),
+            );
+        }
         audit::record(id, "reviewer_result", json!({"assessment":assessment}));
         assessment
     }

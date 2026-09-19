@@ -3,9 +3,11 @@ use crate::{audit, config, usage::Tokens};
 use anyhow::Result;
 use chrono::{DateTime, Duration, Utc};
 use serde_json::Value;
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::path::Path;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Request {
     calls: u64,
     responses: u64,
@@ -13,6 +15,7 @@ struct Request {
     input: u128,
     output: u128,
     completed: Option<(DateTime<Utc>, Option<u64>)>,
+    dimensions: serde_json::Map<String, Value>,
 }
 #[derive(Debug, Default)]
 struct Totals {
@@ -54,21 +57,44 @@ impl Collector {
         };
         if !matches!(
             kind,
-            "agy_request"
-                | "agentapi_request"
-                | "agy_response"
-                | "agentapi_response"
-                | "agy_error"
-                | "agentapi_error"
+            "backend_request"
+                | "backend_response"
+                | "backend_error"
                 | "hook_result"
+                | "backend_ready"
         ) {
             return;
         }
-        let request = self.requests.entry((mode.into(), id.into())).or_default();
+        let request = self
+            .requests
+            .entry((
+                format!("{mode}:{}", event["instance"].as_str().unwrap_or("default")),
+                id.into(),
+            ))
+            .or_default();
         let data = &event["data"];
+        for key in ["host", "provider", "instance", "model", "effort_requested"] {
+            if kind.starts_with("backend_") || !request.dimensions.contains_key(key) {
+                // Backend events describe the running daemon's effective settings,
+                // which can differ from a hook process with a newer environment.
+                request.dimensions.insert(key.into(), event[key].clone());
+            }
+        }
+        if kind == "backend_ready" || kind == "backend_response" {
+            if data["model"].is_string() {
+                request
+                    .dimensions
+                    .insert("model".into(), data["model"].clone());
+            }
+            if data["effort_effective"].is_string() {
+                request
+                    .dimensions
+                    .insert("effort_effective".into(), data["effort_effective"].clone());
+            }
+        }
         match kind {
-            "agy_request" | "agentapi_request" => request.calls += 1,
-            "agy_response" | "agentapi_response" => {
+            "backend_request" => request.calls += 1,
+            "backend_response" => {
                 request.responses += 1;
                 match serde_json::from_value::<Tokens>(data["usage_delta"].clone()) {
                     Ok(tokens) if data["exit_code"] == 0 => {
@@ -78,8 +104,12 @@ impl Collector {
                     _ => request.unknown = true,
                 }
             }
-            "agy_error" | "agentapi_error" => request.unknown = true,
+            "backend_error" => request.unknown = true,
+            "backend_ready" => {}
             "hook_result" => {
+                request
+                    .dimensions
+                    .insert("conversation_id".into(), data["conversation_id"].clone());
                 if data["stage"] == "reviewer"
                     && matches!(
                         data["output"]["decision"].as_str(),
@@ -116,6 +146,7 @@ impl Collector {
         totals
     }
 }
+#[cfg(test)]
 fn collect(dir: &Path, now: DateTime<Utc>, mode: Option<config::Mode>) -> Result<[Totals; 3]> {
     let first = (now - Duration::days(31)).date_naive();
     let last = now.date_naive();
@@ -250,9 +281,60 @@ fn table(totals: &[Totals; 3]) -> String {
     output.push_str(&border("└", "┴", "┘"));
     output
 }
-pub fn print(mode: Option<config::Mode>) -> Result<()> {
+pub fn print(
+    mode: Option<config::Mode>,
+    provider: Option<&str>,
+    instance: Option<&str>,
+    group: Option<audit::Group>,
+) -> Result<()> {
     let now = Utc::now();
-    print!("{}", table(&collect(&config::log_dir(), now, mode)?));
+    let mut collector = Collector {
+        now,
+        mode,
+        requests: HashMap::new(),
+    };
+    let first = (now - Duration::days(31)).date_naive();
+    let paths = audit::paths(&config::log_dir())?
+        .into_iter()
+        .filter(|(date, _)| *date >= first && *date <= now.date_naive())
+        .map(|(_, path)| path);
+    audit::scan(paths, |event| collector.event(event))?;
+    collector.requests.retain(|_, request| {
+        provider
+            .is_none_or(|p| request.dimensions.get("provider").and_then(Value::as_str) == Some(p))
+            && instance.is_none_or(|p| {
+                request.dimensions.get("instance").and_then(Value::as_str) == Some(p)
+            })
+    });
+    if let Some(group) = group {
+        let mut groups: std::collections::BTreeMap<String, Collector> =
+            std::collections::BTreeMap::new();
+        for (id, request) in &collector.requests {
+            if request.completed.is_none() {
+                continue;
+            }
+            let label = request
+                .dimensions
+                .get(group.key())
+                .and_then(Value::as_str)
+                .unwrap_or("default/unknown");
+            groups
+                .entry(label.into())
+                .or_insert_with(|| Collector {
+                    now,
+                    mode,
+                    requests: HashMap::new(),
+                })
+                .requests
+                .insert(id.clone(), request.clone());
+        }
+        for (label, collector) in groups {
+            println!("{}: {}", group.key(), audit::safe_text(&label));
+            print!("{}", table(&collector.totals()));
+        }
+        println!("Total");
+    }
+    print!("{}", table(&collector.totals()));
     Ok(())
 }
 
@@ -269,12 +351,12 @@ mod tests {
         json!({"id":id,"mode":mode,"timestamp":at.to_rfc3339(),"event":kind,"data":data})
     }
     fn call(c: &mut Collector, id: &str, mode: &str, at: DateTime<Utc>, input: u64, output: u64) {
-        c.event(event(id, mode, at, "agy_request", json!({})));
+        c.event(event(id, mode, at, "backend_request", json!({})));
         c.event(event(
             id,
             mode,
             at,
-            "agy_response",
+            "backend_response",
             json!({"exit_code":0,"usage_delta":{"input_tokens":input,"output_tokens":output}}),
         ));
     }
@@ -376,8 +458,8 @@ mod tests {
         let mut c = collector();
         call(&mut c, "good", "cli", now(), 100, 10);
         finish(&mut c, "good", "cli", now(), "reviewer", 1000);
-        c.event(event("retry", "cli", now(), "agy_request", json!({})));
-        c.event(event("retry", "cli", now(), "agy_error", json!({})));
+        c.event(event("retry", "cli", now(), "backend_request", json!({})));
+        c.event(event("retry", "cli", now(), "backend_error", json!({})));
         call(&mut c, "retry", "cli", now(), 50, 5);
         finish(&mut c, "retry", "cli", now(), "reviewer", 3000);
         let totals = c.totals();
@@ -402,12 +484,12 @@ mod tests {
     fn reads_dated_files_across_midnight_ignores_legacy_and_partial_lines() {
         let dir = tempfile::tempdir().unwrap();
         let before = now() - Duration::seconds(20);
-        let request = event("a", "cli", before, "agy_request", json!({}));
+        let request = event("a", "cli", before, "backend_request", json!({}));
         let response = event(
             "a",
             "cli",
             before,
-            "agy_response",
+            "backend_response",
             json!({"exit_code":0,"usage_delta":{"input_tokens":1200,"output_tokens":100}}),
         );
         let result = event(
@@ -448,12 +530,12 @@ mod tests {
     #[test]
     fn incomplete_response_and_missing_duration_remain_unknown() {
         let mut c = collector();
-        c.event(event("partial", "cli", now(), "agy_request", json!({})));
+        c.event(event("partial", "cli", now(), "backend_request", json!({})));
         c.event(event(
             "partial",
             "cli",
             now(),
-            "agy_response",
+            "backend_response",
             json!({"exit_code":0,"usage_delta":{"input_tokens":100}}),
         ));
         c.event(event(
@@ -468,7 +550,13 @@ mod tests {
         assert!(totals[0].unknown_tokens);
         assert!(totals[0].unknown_time);
         let mut c = collector();
-        c.event(event("unfinished", "cli", now(), "agy_request", json!({})));
+        c.event(event(
+            "unfinished",
+            "cli",
+            now(),
+            "backend_request",
+            json!({}),
+        ));
         assert_eq!(c.totals()[0].approvals, 0);
     }
 

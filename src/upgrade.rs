@@ -237,6 +237,10 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     let version = version.map(stable_version).transpose()?;
     let executable = std::env::current_exe()?.canonicalize()?;
     let (cli, desktop) = installed_scope()?;
+    let pi_dir = std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".pi/agent"));
+    let pi = pi_dir.join("extensions/agy-auto-approve.ts").exists();
     if let Some((root, index)) = registry_source(&executable)? {
         println!("Updating Cargo registry installation");
         let mut cargo = Command::new("cargo");
@@ -252,9 +256,15 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     } else {
         release_update(&executable, version.as_deref())?;
     }
+    if pi {
+        run(Command::new(&executable).args(["install", "--pi"]))?;
+    }
     if cli || desktop {
         let mut install = Command::new(&executable);
         install.arg("install");
+        if cli && desktop {
+            install.args(["--hosts", "agy-cli,agy-desktop"]);
+        }
         if !desktop {
             install.arg("--cli-only");
         }
@@ -264,10 +274,10 @@ pub async fn update(version: Option<&str>) -> Result<()> {
         run(&mut install).context(
             "Binary upgraded, but plugin configuration refresh failed; run install to retry",
         )?;
-    } else {
+    } else if !pi {
         println!("No enabled plugin found. Run `agy-auto-approve install` to enable it.");
     }
-    for mode in [config::Mode::Cli, config::Mode::Sidecar] {
+    for mode in [config::Mode::Cli, config::Mode::Sidecar, config::Mode::Pi] {
         if let Ok(status) = daemon::request(
             &config::socket_path_for(mode),
             &json!({"action":"status"}),

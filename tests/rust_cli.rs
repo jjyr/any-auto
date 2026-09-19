@@ -113,7 +113,8 @@ esac
                     "CLI fallback"
                 })
         );
-        let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+        let records: Value =
+            serde_json::from_slice(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap();
         assert_eq!(records[0]["command"], "git status");
         assert_eq!(records[0]["cwd"], "/tmp/work space");
         assert_eq!(records[0]["stage"], "reviewer");
@@ -130,7 +131,7 @@ esac
             .as_array()
             .unwrap()
             .iter()
-            .find(|e| e["event"] == "agentapi_request")
+            .find(|e| e["event"] == "backend_request")
             .unwrap();
         assert_eq!(
             request["data"]["search_path"],
@@ -151,7 +152,8 @@ fn agentapi_failure_includes_stdout_and_stderr() {
         let reason = output["reason"].as_str().unwrap();
         assert!(reason.contains("ANTIGRAVITY_LS_ADDRESS is not set"));
         assert!(reason.contains(stderr));
-        let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+        let records: Value =
+            serde_json::from_slice(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap();
         assert_eq!(records[0]["stage"], "reviewer_error");
     }
 }
@@ -167,7 +169,8 @@ fn missing_agentapi_logs_search_context_and_infrastructure_failure() {
             .unwrap()
             .contains("agentapi new-conversation")
     );
-    let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+    let records: Value =
+        serde_json::from_slice(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap();
     assert_eq!(records[0]["stage"], "reviewer_error");
     let trace: Value = serde_json::from_slice(
         &s.run(&["logs", "show", records[0]["id"].as_str().unwrap()])
@@ -177,11 +180,11 @@ fn missing_agentapi_logs_search_context_and_infrastructure_failure() {
     let events = trace["events"].as_array().unwrap();
     let error = events
         .iter()
-        .find(|e| e["event"] == "agentapi_error")
+        .find(|e| e["event"] == "backend_error")
         .unwrap();
     assert_eq!(error["data"]["operation"], "new-conversation");
     assert_eq!(error["data"]["stage"], "spawn");
-    assert!(!events.iter().any(|e| e["event"] == "agentapi_response"));
+    assert!(!events.iter().any(|e| e["event"] == "backend_response"));
 }
 #[test]
 fn lifecycle_auto_spawn_fail_closed_and_breaker() {
@@ -215,17 +218,14 @@ case "$1" in
   send-message) echo send >> "$HOME/calls"; if [ "$2" = expired ]; then exit 1; fi; printf '%s\n' '{"response":"```json\n{\"outcome\":\"allow\"}\n```"}';;
 esac
 "#);
-    fs::create_dir_all(agy_auto_approve::sessions::directory(
-        &s.dir.path().join("state/sidecar"),
-        "test",
-    ))
-    .unwrap();
-    fs::write(
-        agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
-            .join("reviewer_session.json"),
-        r#"{"conversationId":"expired"}"#,
-    )
-    .unwrap();
+    assert_eq!(s.hook(&payload("git status"))["decision"], "allow");
+    assert!(s.run(&["daemon", "stop"]).status.success());
+    let path = agy_auto_approve::sessions::directory(&s.dir.path().join("state/sidecar"), "test")
+        .join("reviewer_session.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["conversationId"] = json!("expired");
+    fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
+    fs::write(s.dir.path().join("calls"), "").unwrap();
     for _ in 0..2 {
         let out = s.hook(&payload("git status && gh pr list"));
         assert_eq!(out["decision"], "allow", "{out}");
@@ -273,7 +273,7 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
     let config = s.dir.path().join(".gemini/config");
     fs::create_dir_all(&config).unwrap();
     fs::write(config.join("hooks.json"), r#"{"other":{"enabled":true}}"#).unwrap();
-    let out = s.run(&["install"]);
+    let out = s.run(&["install", "--hosts", "agy-cli,agy-desktop"]);
     assert!(
         out.status.success(),
         "{}",
@@ -286,7 +286,11 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
         .unwrap();
     assert!(command.contains(env!("CARGO_BIN_EXE_agy-auto-approve")));
     assert!(!command.contains("python"));
-    assert!(s.run(&["install"]).status.success());
+    assert!(
+        s.run(&["install", "--hosts", "agy-cli,agy-desktop"])
+            .status
+            .success()
+    );
     fs::write(config.join("hooks.json"), "invalid JSON").unwrap();
     assert!(!s.run(&["install", "--cli-only"]).status.success());
     assert_eq!(
@@ -476,6 +480,7 @@ esac
     assert!(s.run(&["daemon", "stop"]).status.success());
     let list = s.run(&[
         "logs",
+        "--no-group",
         "--json",
         "--tool",
         "run_command",
@@ -498,16 +503,20 @@ esac
         serde_json::from_str::<Value>(&input).unwrap()
     );
     assert_eq!(events.last().unwrap()["data"]["output"], output);
-    assert!(events.iter().any(|e| e["event"] == "agentapi_request" && e["data"]["args"][0] == "new-conversation"));
+    assert!(
+        events
+            .iter()
+            .any(|e| e["event"] == "backend_request" && e["data"]["args"][0] == "new-conversation")
+    );
     assert!(events.iter().any(|e| {
-        e["event"] == "agentapi_request"
+        e["event"] == "backend_request"
             && e["data"]["args"][2]
                 .as_str()
                 .unwrap_or("")
                 .contains("cargo test --locked")
     }));
     assert!(events.iter().any(|e| {
-        e["event"] == "agentapi_response"
+        e["event"] == "backend_response"
             && e["data"]["stdout"]
                 .as_str()
                 .unwrap_or("")
@@ -516,8 +525,11 @@ esac
     assert!(events.iter().any(|e| e["event"] == "assessment"
         && e["data"]["assessment"]["risk_level"] == "low"
         && e["data"]["assessment"]["user_authorization"] == "high"));
-    let latest: Value =
-        serde_json::from_slice(&s.run(&["logs", "--json", "--limit", "1"]).stdout).unwrap();
+    let latest: Value = serde_json::from_slice(
+        &s.run(&["logs", "--no-group", "--json", "--limit", "1"])
+            .stdout,
+    )
+    .unwrap();
     assert_eq!(latest[0]["tool"], "view_file");
     assert_eq!(latest[0]["stage"], "whitelist");
     assert!(!s.run(&["logs", "show", "missing"]).status.success());
@@ -537,7 +549,7 @@ esac
 fn logs_records_failures_and_concurrent_hooks() {
     let s = Sandbox::new();
     assert_eq!(
-        serde_json::from_slice::<Value>(&s.run(&["logs", "--json"]).stdout).unwrap(),
+        serde_json::from_slice::<Value>(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap(),
         json!([])
     );
     let input = json!({"toolCall":{"name":"view_file","args":{}}}).to_string();
@@ -563,7 +575,8 @@ fn logs_records_failures_and_concurrent_hooks() {
     }
     s.hook("bad JSON");
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "deny");
-    let records: Value = serde_json::from_slice(&s.run(&["logs", "--json"]).stdout).unwrap();
+    let records: Value =
+        serde_json::from_slice(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap();
     assert_eq!(records.as_array().unwrap().len(), 14);
     let id = records[0]["id"].as_str().unwrap();
     let trace: Value = serde_json::from_slice(&s.run(&["logs", "show", id]).stdout).unwrap();
@@ -572,7 +585,7 @@ fn logs_records_failures_and_concurrent_hooks() {
             .as_array()
             .unwrap()
             .iter()
-            .any(|e| e["event"] == "agentapi_error")
+            .any(|e| e["event"] == "backend_error")
     );
     assert_eq!(records[1]["stage"], "invalid_input");
     let mut ids = std::collections::HashSet::new();
@@ -680,8 +693,11 @@ fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
     let readonly = json!({"toolCall":{"name":"view_file","args":{}}}).to_string();
     s.hook(&readonly);
     s.hook(&readonly);
-    let latest: Value =
-        serde_json::from_slice(&s.run(&["logs", "--json", "--limit", "1"]).stdout).unwrap();
+    let latest: Value = serde_json::from_slice(
+        &s.run(&["logs", "--no-group", "--json", "--limit", "1"])
+            .stdout,
+    )
+    .unwrap();
     let follower = LogFollower::new(&s, &["-f", "--json", "--limit", "1", "--tool", "view_file"]);
     assert_eq!(follower.next()["id"], latest[0]["id"]);
     s.hook("invalid input");
@@ -693,7 +709,7 @@ fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
         &s.dir.path().join("logs"),
         chrono::Utc::now().date_naive(),
     );
-    let event = json!({"event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
+    let event = json!({"schema_version":3, "host":"agy-desktop", "event":"hook_result", "id":"partial", "data":{"tool":"view_file", "output":{"decision":"allow"}}}).to_string();
     let split = event.len() / 2;
     let mut file = fs::OpenOptions::new().append(true).open(&log).unwrap();
     file.write_all(&event.as_bytes()[..split]).unwrap();
@@ -920,21 +936,22 @@ esac
     )
     .unwrap();
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
+    let changed = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert_eq!(
-        fs::read_to_string(s.dir.path().join("created")).unwrap(),
-        before
+        &changed[before.len()..],
+        "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
     );
     assert!(s.run(&["daemon", "stop"]).status.success());
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     assert_eq!(
         fs::read_to_string(s.dir.path().join("created")).unwrap(),
-        before
+        changed
     );
     assert!(s.run(&["daemon", "restart"]).status.success());
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let after = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert_eq!(
-        &after[before.len()..],
+        &after[changed.len()..],
         "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
     );
     fs::write(

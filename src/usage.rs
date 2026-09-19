@@ -69,7 +69,7 @@ pub(crate) fn record(path: &Path, cid: Option<&str>, raw: &str) -> Option<Tokens
     if cid.is_some_and(|cid| cid != current.conversation_id) {
         return None;
     }
-    let state: Value = std::fs::read(path)
+    let mut state: Value = std::fs::read(path)
         .ok()
         .and_then(|bytes| serde_json::from_slice(&bytes).ok())
         .unwrap_or(Value::Null);
@@ -82,12 +82,12 @@ pub(crate) fn record(path: &Path, cid: Option<&str>, raw: &str) -> Option<Tokens
         return None;
     }
     let delta = current.delta(previous.as_ref(), cid.is_none());
-    if let Err(error) = save(
-        path,
-        &json!({
-            "conversationId":current.conversation_id, "usage_baseline":current
-        }),
-    ) {
+    if !state.is_object() || state["conversationId"] != current.conversation_id {
+        state = json!({});
+    }
+    state["conversationId"] = json!(current.conversation_id);
+    state["usage_baseline"] = json!(current);
+    if let Err(error) = save(path, &state) {
         eprintln!("agy-auto-approve: unable to save token baseline: {error}");
     }
     delta

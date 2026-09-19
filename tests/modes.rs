@@ -167,7 +167,7 @@ fn dual_daemons_route_reuse_and_restart_independently() {
         .exists()
     );
     assert_eq!(h.hook(None, false)["decision"], "allow");
-    let records = h.run(&["logs", "--json"]);
+    let records = h.run(&["logs", "--no-group", "--json"]);
     assert!(
         records
             .as_array()
@@ -219,23 +219,19 @@ fn cli_model_and_prompt_are_passed_as_single_arguments() {
 #[test]
 fn cli_cached_session_failure_recreates_only_cli_session() {
     let h = Host::new();
-    fs::create_dir_all(agy_auto_approve::sessions::directory(
+    assert_eq!(h.hook(None, false)["decision"], "allow");
+    h.run(&["daemon", "stop", "--mode", "cli"]);
+    let path = agy_auto_approve::sessions::directory(
         &h.dir.path().join("state/cli"),
         "same-user-conversation",
-    ))
-    .unwrap();
-    fs::write(
-        agy_auto_approve::sessions::directory(
-            &h.dir.path().join("state/cli"),
-            "same-user-conversation",
-        )
-        .join("reviewer_session.json"),
-        r#"{"conversationId":"expired"}"#,
     )
-    .unwrap();
+    .join("reviewer_session.json");
+    let mut state: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    state["conversationId"] = json!("expired");
+    fs::write(path, serde_json::to_vec(&state).unwrap()).unwrap();
     assert_eq!(h.hook(None, true)["decision"], "allow");
     assert_eq!(h.hook(None, false)["decision"], "allow");
-    let records = h.run(&["logs", "--json"]);
+    let records = h.run(&["logs", "--no-group", "--json"]);
     let trace = h.run(&["logs", "show", records[0]["id"].as_str().unwrap()]);
     assert!(
         trace["events"]
@@ -246,7 +242,7 @@ fn cli_cached_session_failure_recreates_only_cli_session() {
     );
     assert_eq!(
         fs::read_to_string(h.dir.path().join("agy-calls")).unwrap(),
-        "new\nsend\n"
+        "new\nsend\nnew\nsend\n"
     );
     assert!(
         agy_auto_approve::sessions::directory(
@@ -296,7 +292,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
     let out = h
         .command()
-        .args(["stats", "--mode", "cli"])
+        .args(["stats", "--mode", "cli", "--no-group"])
         .output()
         .unwrap();
     assert!(
@@ -342,7 +338,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     }
     let responses: Vec<_> = events
         .iter()
-        .filter(|event| event["event"] == "agy_response")
+        .filter(|event| event["event"] == "backend_response")
         .collect();
     assert_eq!(responses.len(), 4);
     for response in responses {
@@ -352,7 +348,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
         );
     }
     assert_eq!(h.hook(Some("sidecar"), false)["decision"], "allow");
-    let all = h.command().arg("stats").output().unwrap();
+    let all = h.command().args(["stats", "--no-group"]).output().unwrap();
     let all = String::from_utf8(all.stdout).unwrap();
     assert!(all.contains("N/A"));
     for line in all.lines().filter(|line| line.contains("Last ")) {
@@ -365,7 +361,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     }
     let cli = h
         .command()
-        .args(["stats", "--mode", "cli"])
+        .args(["stats", "--mode", "cli", "--no-group"])
         .output()
         .unwrap();
     assert!(!String::from_utf8(cli.stdout).unwrap().contains("N/A"));

@@ -66,6 +66,18 @@ impl SessionPool {
         let path = directory(&self.base, id);
         let key = path.file_name().unwrap().to_string_lossy().into_owned();
         let mut entries = self.entries.lock().unwrap();
+        if !entries.contains_key(&key) && entries.len() >= 32 {
+            let oldest = entries
+                .iter()
+                .filter(|(_, session)| Arc::strong_count(session) == 1)
+                .min_by_key(|(_, session)| *session.last_used.lock().unwrap())
+                .map(|(key, _)| key.clone());
+            if let Some(key) = oldest {
+                entries.remove(&key);
+            } else {
+                anyhow::bail!("Reviewer session limit reached; retry after active reviews finish");
+            }
+        }
         let entry = entries.entry(key).or_insert_with(|| {
             Arc::new(Session {
                 bridge: tokio::sync::Mutex::new(Bridge::persistent(self.mode, path)),

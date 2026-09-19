@@ -25,7 +25,7 @@ pub(super) async fn call_with_usage(
     let operation = args.first().copied().unwrap_or("unknown");
     audit::record(
         id,
-        &format!("{program}_request"),
+        "backend_request",
         json!({"command":program, "args":args, "operation":operation,
                 "daemon_pid":std::process::id(),
                 "search_path":std::env::split_paths(&path).collect::<Vec<_>>(),
@@ -59,7 +59,7 @@ pub(super) async fn call_with_usage(
             };
             audit::record(
                 id,
-                &format!("{program}_error"),
+                "backend_error",
                 json!({"error":message,"stage":stage,"operation":operation,"duration_ms":started.elapsed().as_millis()}),
             );
             bail!("{message}");
@@ -73,7 +73,7 @@ pub(super) async fn call_with_usage(
     };
     audit::record(
         id,
-        &format!("{program}_response"),
+        "backend_response",
         json!({"stdout":raw, "usage_delta":usage_delta,
             "stderr":String::from_utf8_lossy(&output.stderr), "exit_code":output.status.code(),
             "duration_ms":started.elapsed().as_millis()}),

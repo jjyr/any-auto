@@ -1,15 +1,21 @@
-use agy_auto_approve::{audit, config, daemon, pipeline, register, stats, upgrade};
+use agy_auto_approve::{audit, config, daemon, install, pipeline, stats, upgrade};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 use std::io::Read;
 
 #[derive(Parser)]
-#[command(version, about = "Antigravity approval hook and daemon management")]
+#[command(
+    version,
+    about = "Antigravity and Pi approval hooks and reviewer daemons"
+)]
 struct Cli {
-    /// Backend mode. Hooks auto-detect; stats includes all modes; other commands default to cli.
-    #[arg(long, global = true, value_enum)]
+    /// Host routing/filter. Hooks auto-detect; logs/stats include all hosts unless filtered.
+    #[arg(long, visible_alias = "host", global = true, value_enum)]
     mode: Option<config::Mode>,
+    /// Isolate a daemon instance, or filter logs/stats to that instance.
+    #[arg(long, global = true)]
+    instance: Option<String>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -17,8 +23,17 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
-    /// Show rolling 24-hour, 7-day and 30-day model approval usage (all modes by default).
-    Stats,
+    /// Record a Pi user confirmation (internal extension protocol).
+    HumanResult,
+    /// Show rolling model approval usage, grouped by host plus totals by default.
+    Stats {
+        #[arg(long, value_enum, default_value = "host")]
+        group_by: audit::Group,
+        #[arg(long)]
+        no_group: bool,
+        #[arg(long, value_enum)]
+        provider: Option<config::Provider>,
+    },
     /// Show global reviewer settings, or edit the global TOML file.
     Config {
         #[arg(long, conflicts_with = "json")]
@@ -39,12 +54,20 @@ enum Commands {
         tool: Option<String>,
         #[arg(long)]
         conversation: Option<String>,
-        /// Print JSON summaries (an array normally, JSON Lines with --follow).
+        /// Print grouped JSON (an array with --no-group, JSON Lines with --follow).
         #[arg(long)]
         json: bool,
         /// Print recent approvals, then follow newly completed approvals until Ctrl-C.
         #[arg(short, long)]
         follow: bool,
+        /// Group recent records (default: host). Follow always uses chronological order.
+        #[arg(long, value_enum, conflicts_with_all = ["follow", "no_group"])]
+        group_by: Option<audit::Group>,
+        /// Merge all matching records into one chronological list.
+        #[arg(long)]
+        no_group: bool,
+        #[arg(long, value_enum)]
+        provider: Option<config::Provider>,
     },
     /// Start, inspect, stop, or run the approval daemon.
     Daemon {
@@ -56,18 +79,19 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
-    /// Register this executable for CLI hooks and Desktop sidecars (both by default).
+    /// Install integrations: no arguments opens the terminal wizard.
     Install {
-        #[arg(long, conflicts_with = "desktop_only")]
-        cli_only: bool,
-        #[arg(long)]
-        desktop_only: bool,
+        #[command(flatten)]
+        options: install::Options,
     },
 }
 #[derive(Subcommand)]
 enum DaemonCommand {
     Start,
-    Status,
+    Status {
+        #[arg(long)]
+        all: bool,
+    },
     Stop,
     /// Stop the daemon, forget the cached reviewer conversation, and start again.
     Restart,
@@ -78,13 +102,19 @@ enum DaemonCommand {
 }
 #[derive(Subcommand)]
 enum LogsCommand {
-    /// Show all recorded events for an exact approval ID, including agentapi input/output.
+    /// Show all events for an approval ID, including backend input/output.
     Show { id: String },
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
     let selected_mode = cli.mode;
+    config::set_instance(
+        cli.instance
+            .clone()
+            .or_else(|| std::env::var("AGY_AUTO_APPROVE_INSTANCE").ok())
+            .unwrap_or_else(|| "default".into()),
+    )?;
     config::set_mode(cli.mode.unwrap_or_else(|| {
         if matches!(cli.command, Commands::Hook) {
             config::Mode::for_hook()
@@ -93,7 +123,33 @@ async fn main() -> Result<()> {
         }
     }));
     match cli.command {
-        Commands::Stats => stats::print(selected_mode)?,
+        Commands::HumanResult => {
+            let mut bytes = Vec::new();
+            std::io::stdin().take(65537).read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= 65536, "Human result too large");
+            let value: Value = serde_json::from_slice(&bytes)?;
+            let id = value["request_id"]
+                .as_str()
+                .filter(|v| !v.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("Missing request id"))?;
+            anyhow::ensure!(value["allowed"].is_boolean(), "Missing human decision");
+            if value["allowed"] == true
+                && let Some(session) = value["conversation_id"].as_str().filter(|s| !s.is_empty())
+            {
+                pipeline::Breaker::open(&config::state_dir(), session)?.record("allow")?;
+            }
+            audit::record(id, "human_result", value.clone());
+        }
+        Commands::Stats {
+            group_by,
+            no_group,
+            provider,
+        } => stats::print(
+            selected_mode,
+            provider.map(|p| p.as_str()),
+            cli.instance.as_deref(),
+            (!no_group).then_some(group_by),
+        )?,
         Commands::Hook => {
             let mut bytes = Vec::new();
             let parsed = std::io::stdin()
@@ -139,6 +195,9 @@ async fn main() -> Result<()> {
             conversation,
             json,
             follow,
+            group_by,
+            no_group,
+            provider,
         } => match command {
             Some(LogsCommand::Show { id }) => {
                 println!("{}", serde_json::to_string_pretty(&audit::show(&id)?)?)
@@ -149,6 +208,14 @@ async fn main() -> Result<()> {
                     decision,
                     tool,
                     conversation,
+                    host: selected_mode.map(|m| m.host().into()),
+                    provider: provider.map(|p| p.as_str().into()),
+                    instance: cli.instance.clone(),
+                    group_by: if follow || no_group {
+                        None
+                    } else {
+                        Some(group_by.unwrap_or(audit::Group::Host))
+                    },
                 };
                 if follow {
                     audit::follow(&filter, json).await?;
@@ -165,14 +232,12 @@ async fn main() -> Result<()> {
             }
         }
         Commands::Update { version } => upgrade::update(version.as_deref()).await?,
-        Commands::Install {
-            cli_only,
-            desktop_only,
-        } => register::register(cli_only, desktop_only)?,
+        Commands::Install { options } => install::run(options)?,
         Commands::Daemon { command } => match command {
             DaemonCommand::Run { idle_timeout } => daemon::run(idle_timeout).await?,
             DaemonCommand::Start => println!("{}", daemon::start().await?),
-            DaemonCommand::Status => {
+            DaemonCommand::Status { all: true } => println!("{}", daemon::status_all().await?),
+            DaemonCommand::Status { all: false } => {
                 match daemon::request(&config::socket_path(), &json!({"action":"status"}), 1).await
                 {
                     Ok(v) if v["status"] == "running" => println!("{v}"),
