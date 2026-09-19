@@ -59,6 +59,9 @@ fi
     fn command(&self) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         cmd.env("HOME", self.dir.path())
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_RUNTIME_DIR")
             .env("PATH", self.dir.path())
             .env("ANY_AUTO_SOCKET", self.dir.path().join("a.sock"))
             .env("ANY_AUTO_STATE_DIR", self.dir.path().join("state"))
@@ -320,7 +323,7 @@ printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"us
     );
     assert!(out.stderr.is_empty());
     let table = String::from_utf8(out.stdout).unwrap();
-    assert!(table.contains("Outcomes (human confirmations"));
+    assert!(!table.contains("Outcomes"));
     for line in table.lines().filter(|line| line.contains("Last ")) {
         let cells: Vec<_> = line
             .split('│')

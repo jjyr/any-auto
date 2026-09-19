@@ -6,6 +6,9 @@ fn bare_install_without_terminal_fails_without_writes() {
     let output = Command::new(env!("CARGO_BIN_EXE_any-auto"))
         .arg("install")
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -20,6 +23,9 @@ fn explicit_dry_run_never_writes_or_prompts() {
     let output = Command::new(env!("CARGO_BIN_EXE_any-auto"))
         .args(["install", "--agents", "agy-cli,agy-desktop,pi", "--dry-run"])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
         .stdin(Stdio::null())
         .output()
         .unwrap();
@@ -41,6 +47,9 @@ fn invalid_desktop_configuration_does_not_partially_install_cli() {
     let output = Command::new(env!("CARGO_BIN_EXE_any-auto"))
         .args(["install", "--agents", "agy-cli,agy-desktop"])
         .env("HOME", home.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
         .stdin(Stdio::null())
         .output()
         .unwrap();

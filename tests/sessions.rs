@@ -79,6 +79,9 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
             if mode == "sidecar" { "agentapi" } else { "cli" },
         )
         .env("HOME", self.root.path())
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("XDG_DATA_HOME")
+        .env_remove("XDG_RUNTIME_DIR")
         .env("PATH", self.root.path())
         .env("ANY_AUTO_SOCKET", self.root.path().join("a.sock"))
         .env("ANY_AUTO_STATE_DIR", self.root.path().join("state"))

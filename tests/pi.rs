@@ -49,6 +49,9 @@ done
     fn cmd(&self) -> Command {
         let mut c = Command::new(env!("CARGO_BIN_EXE_any-auto"));
         c.env("HOME", self.root.path())
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_RUNTIME_DIR")
             .env("PATH", self.root.path())
             .env("ANY_AUTO_SOCKET", self.root.path().join("a.sock"))
             .env("ANY_AUTO_LOG_DIR", self.root.path().join("logs"))
