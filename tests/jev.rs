@@ -726,3 +726,55 @@ fn agy_format_and_test_uses_user_request_from_hook_transcript() {
     assert!(!state.to_string().contains("generated metadata"));
     assert!(!h.logs().contains("执行 format 和 test"));
 }
+
+#[test]
+fn workspace_listing_is_reviewed_by_jev_with_user_context() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok(), ok()]);
+    h.configure(&url, "");
+    for agent in ["agy-cli", "pi"] {
+        let command = format!("ls -la {}", h.root.path().display());
+        let tool = if agent == "pi" {
+            json!({"name":"bash","args":{"command":command}})
+        } else {
+            json!({"name":"run_command","args":{"CommandLine":command,"Cwd":h.root.path()}})
+        };
+        let req = json!({"toolCall":tool,"workspacePaths":[h.root.path()],"conversationId":"readonly-fixture", "authorization":request()["authorization"]});
+        let mut child = h
+            .command()
+            .args(["hook", "--agent", agent])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(req.to_string().as_bytes())
+            .unwrap();
+        let output = child.wait_with_output().unwrap();
+        assert!(output.status.success());
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["decision"], "allow", "{agent}: {result}");
+        assert!(
+            result["reason"]
+                .as_str()
+                .unwrap()
+                .contains("approval_thresholds_met")
+        );
+    }
+    let requests = worker.join().unwrap();
+    assert_eq!(requests.len(), 2);
+    for (_, body) in requests {
+        assert!(
+            body["state"]["action"]["args"]["CommandLine"]
+                .as_str()
+                .unwrap()
+                .starts_with("ls -la ")
+        );
+        assert_eq!(body["state"]["authorization"]["availability"], "available");
+    }
+    assert!(h.logs().contains("backend_request"));
+}

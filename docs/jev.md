@@ -143,7 +143,11 @@ hidden threshold.
 
 Rules are applied in order:
 
-1. Existing local hard rules and circuit breaker behavior still apply.
+1. Existing local hard rules and circuit breaker behavior still apply. Shell
+   directory listings and file reads go through the configured backend. Jev's
+   instructions identify bounded workspace inspection as low risk and permitted,
+   and as an ordinary supporting step for a stated workspace task; they still
+   require evaluation of actual arguments, user constraints, and side effects.
 2. Configuration, transport, and response-validation errors produce deny.
 3. A selected prohibited policy or critical risk meeting the threshold produces deny.
 4. Missing or incomplete required evidence produces deny.
