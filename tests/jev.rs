@@ -674,3 +674,55 @@ fn direct_config_key_authenticates_and_is_redacted_from_diagnostics() {
     assert!(!output.status.success());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("fixture-key"));
 }
+
+#[test]
+fn agy_format_and_test_uses_user_request_from_hook_transcript() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok()]);
+    h.configure(&url, "");
+    let artifact = h.root.path().join("brain/agy-conversation");
+    let transcript = artifact.join(".system_generated/logs/transcript_full.jsonl");
+    fs::create_dir_all(transcript.parent().unwrap()).unwrap();
+    fs::write(&transcript, json!({"step_index":0,"source":"USER_EXPLICIT","type":"USER_INPUT","status":"DONE",
+        "content":"<USER_REQUEST>\n执行 format 和 test\n</USER_REQUEST>\n<ADDITIONAL_METADATA>generated metadata</ADDITIONAL_METADATA>"}).to_string()).unwrap();
+    let req = json!({"conversationId":"agy-conversation","stepIdx":56,
+        "artifactDirectoryPath":artifact,"transcriptPath":transcript,
+        "workspacePaths":[h.root.path()],
+        "toolCall":{"name":"run_command","args":{"CommandLine":"cargo test","Cwd":h.root.path()}}});
+    let mut child = h
+        .command()
+        .args(["hook", "--agent", "agy-cli"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(req.to_string().as_bytes())
+        .unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["decision"], "allow", "{result}");
+    let requests = worker.join().unwrap();
+    let state = &requests[0].1["state"];
+    assert_eq!(
+        state["authorization"]["latest_user_message"]["text"],
+        "执行 format 和 test"
+    );
+    assert_eq!(
+        state["authorization"]["latest_user_message"]["source"],
+        "agy_transcript"
+    );
+    assert_eq!(state["completeness"]["authorization"], "available");
+    assert_eq!(state["action"]["args"]["CommandLine"], "cargo test");
+    assert!(!state.to_string().contains("generated metadata"));
+    assert!(!h.logs().contains("执行 format 和 test"));
+}

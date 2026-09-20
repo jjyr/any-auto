@@ -32,6 +32,8 @@ Restart the Desktop agent after installation/update to reload its sidecar.
 but retains circuit breakers. Restart preserves persisted sessions. Shared daily audit logs record agent, provider and instance;
 logs and stats need no running daemon.
 
-Jev requires user-origin authorization evidence for automatic approval. agy hooks
-currently have no verified automatic message collector; without supplied evidence,
-Jev routes reviewed actions to human confirmation. See [Jev context handling](jev.md#context-sent-for-review).
+Jev requires user-origin authorization evidence for automatic approval. CLI hooks
+provide a conversation transcript, from which any-auto collects explicit user
+requests preceding the tool call. Desktop collection requires the same transcript
+fields and has not been verified. Missing evidence denies backend-reviewed actions.
+See [Jev context handling](jev.md#context-sent-for-review).

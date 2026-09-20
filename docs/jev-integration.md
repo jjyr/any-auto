@@ -282,3 +282,31 @@ Before acceptance, confirm whether an official machine-readable OpenAPI schema i
 - [JS client configuration](https://docs.typesafe.ai/sdk/javascript/api/interfaces/TypeSafeClientConfig) and [retry policy](https://docs.typesafe.ai/sdk/javascript/api/interfaces/RetryPolicy): reference connection/retry semantics; this project uses its own Rust client and total deadline.
 
 Research used the corresponding `.md` pages, discovered through [llms.txt](https://docs.typesafe.ai/llms.txt).
+
+## Antigravity CLI transcript verification (2026-09-20)
+
+A real CLI hook for `cargo test` included `transcriptPath`,
+`artifactDirectoryPath`, `conversationId`, and `stepIdx`. The referenced
+`.system_generated/logs/transcript_full.jsonl` contained the user's request to
+run formatting and tests as a completed `USER_INPUT` entry with
+`source=USER_EXPLICIT`. Its `content` wrapped the request in `<USER_REQUEST>`
+followed by generated metadata. The previous adapter ignored this source, so
+Jev received unavailable authorization and returned `incomplete_evidence`.
+
+The hook now collects explicit user entries before the current step, validates
+conversation/path association, excludes model messages and generated metadata,
+and bounds both transcript reads and collected evidence. A regression test
+checks that this evidence reaches the Jev HTTP request and permits an allow
+response through the pipeline. This fixes missing evidence; live model
+classification and probability thresholds still determine approval. Desktop
+support for these hook fields remains unverified.
+
+## Recent user-message window
+
+Both agy and Pi collect the latest five user messages: one latest request plus
+up to four preceding requests in chronological order. Reaching this count is
+intentional window selection, not missing evidence. Older messages, including
+older oversized content or Pi compaction markers outside the window, do not make
+the selected evidence incomplete. Nontext or oversized evidence within the
+window still fails closed. Older instructions outside this window are not sent;
+the user may need to restate constraints or authorization relevant to the action.

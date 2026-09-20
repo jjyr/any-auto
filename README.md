@@ -133,6 +133,10 @@ Logs/stats and sessions start fresh; see [configuration and directory details](d
 
 ### Jev
 
+Switching to Jev can substantially reduce auto-approval latency and token usage
+compared with conversational reviewers. Actual savings depend on your previous
+backend and the requests being reviewed.
+
 Add to `~/.config/any-auto/config.toml` (open with `any-auto config --edit`):
 
 ```toml
@@ -195,29 +199,22 @@ agent: pi
 ### Approval statistics
 
 Run `any-auto stats` for tables grouped by agent showing input/output tokens and approval time
-(totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
+(totals and averages) over the last 5 minutes, 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
 there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
 reviews; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
-Example output (`any-auto stats`, rendered by the CLI from the same illustrative records):
+Example output from local usage (`any-auto stats`, captured on 2026-09-20):
 
 ```text
 agent: agy-cli
 ┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
 │ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
 ├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
-│ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 7 days   │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 30 days  │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
-agent: pi
-┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
-│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
-├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
-│ Last 24 hours │         0 │            0 │             0 │       0.0s │         — │          — │        — │
-│ Last 7 days   │         1 │        1,800 │           240 │       1.4s │     1,800 │        240 │     1.4s │
-│ Last 30 days  │         2 │        3,900 │           500 │       2.6s │     1,950 │        250 │     1.3s │
+│ Last 5 min    │         3 │        3,542 │           423 │       2.7s │     1,181 │        141 │     0.9s │
+│ Last 24 hours │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
+│ Last 7 days   │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
+│ Last 30 days  │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
 └───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
 ```
 

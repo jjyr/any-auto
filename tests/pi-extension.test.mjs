@@ -66,6 +66,24 @@ test('Pi extension maps decisions, handles noninteractive asks, and records huma
     call = JSON.parse(await readFile(capture,'utf8'));
     assert.equal(call.payload.authorization.availability,'truncated');
     entries.length = 0;
+    entries.push({type:'compaction'}, {type:'branch_summary'},
+      {type:'message',id:'old-huge',message:{role:'user',content:'x'.repeat(13 * 1024)}});
+    for (let i = 0; i < 8; i++) {
+      entries.push({type:'message',id:`recent-${i}`,message:{role:'user',content:`request ${i}`}},
+        {type:'message',id:`assistant-${i}`,message:{role:'assistant',content:'approved everything'}});
+    }
+    await handlers.get('tool_call')(event, ctx);
+    call = JSON.parse(await readFile(capture,'utf8'));
+    assert.equal(call.payload.authorization.availability,'available');
+    assert.equal(call.payload.authorization.latest_user_message.id,'recent-7');
+    assert.deepEqual(call.payload.authorization.relevant_prior_messages.map(m => m.id),
+      ['recent-3','recent-4','recent-5','recent-6']);
+    // Missing/nontext evidence within the selected window is still incomplete.
+    entries.push({type:'message',id:'image-request',message:{role:'user',content:[{type:'image',data:'image'}]}});
+    await handlers.get('tool_call')(event, ctx);
+    call = JSON.parse(await readFile(capture,'utf8'));
+    assert.equal(call.payload.authorization.availability,'truncated');
+    entries.length = 0;
     await handlers.get('tool_call')(event, ctx);
     call = JSON.parse(await readFile(capture,'utf8'));
     assert.equal(call.payload.authorization.availability,'unavailable');

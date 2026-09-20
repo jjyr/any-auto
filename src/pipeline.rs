@@ -326,6 +326,12 @@ async fn evaluate_inner(
 
 fn normalize(payload: &Value) -> Value {
     let mut value = payload.clone();
+    if config::mode() != config::Mode::Pi
+        && value["authorization"].is_null()
+        && value["transcriptPath"].is_string()
+    {
+        value["authorization"] = crate::authorization::from_agy_hook(payload);
+    }
     if config::mode() == config::Mode::Pi {
         value["original_tool"] = payload["toolCall"].clone();
         let name = payload["toolCall"]["name"].as_str().unwrap_or("");

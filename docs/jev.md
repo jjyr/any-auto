@@ -97,18 +97,31 @@ State contains:
 - Explicit completeness markers for the action, authorization, and script evidence.
 
 Pi reads active branch message entries, accepts only role=user, and preserves
-message IDs. It collects at most 32 user messages and 12 KiB of text. Omitted
-older messages, nontext content, compaction/branch summaries, or excessive size
-mark the context incomplete. Assistant statements and tool outputs cannot stand
-in for user messages. Branch switches do not retain the old branch's evidence.
+message IDs. It collects the latest user message and up to four preceding user
+messages (five total), with at most 12 KiB of text. Prior messages are sent in
+chronological order. Older entries outside this window do not mark the evidence
+incomplete. Nontext content, compaction/branch summaries encountered within the
+window, or excessive size still mark it incomplete. Assistant statements and tool
+outputs cannot stand in for user messages. Branch switches do not retain the old
+branch's evidence.
 
 The Rust boundary validates the authorization shape and applies a 16 KiB encoded
-budget. agy currently has no verified automatic user-message source. Its requests
-without authorization evidence are explicitly unavailable, so Jev can request
-human review but cannot auto-allow them. Locally allowlisted read-only tools still
-bypass the reviewer. Integrations may supply the normalized `authorization` shape
-shown in the [research document](jev-integration.md); this is a trusted host
-integration contract, not a credential or authorization claim from tool arguments.
+budget. Antigravity CLI hooks supply `transcriptPath`, `artifactDirectoryPath`,
+`conversationId`, and `stepIdx`. The collector verifies that the transcript belongs
+to that conversation and reads completed `USER_INPUT` / `USER_EXPLICIT` entries
+before the current tool step. It extracts the original `<USER_REQUEST>` text,
+excluding generated metadata and model responses. The latest five user messages and
+12 KiB of user text are collected, within a 4 MiB transcript read limit.
+
+Both collectors use a recent-message window, not the full conversation. Older
+instructions and restrictions outside the window are not sent; an action that
+needs those details may require the user to restate them. Reaching five messages
+is normal window selection, not truncation. Byte limits still fail closed.
+
+Missing, malformed, oversized, or mismatched transcripts do not establish
+authorization. Desktop hooks can use the same collector when they provide this
+contract; automatic Desktop collection has not been verified. Locally allowlisted
+read-only tools still bypass backend review. User-message contents are not logged.
 
 Script extraction is bounded to four directly referenced scripts within the
 workspace, at most 4000 bytes each. Missing or truncated scripts prevent automatic

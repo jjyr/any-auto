@@ -121,7 +121,7 @@ File permissions are 0600. There is no automatic retention cleanup.
 ## Stats: usage and latency aggregates
 
 Stats answer **which agent/backend consumed the reviews and tokens?** Default output
-is one table per agent, without a combined total or outcomes section. Each table contains rolling 24-hour, 7-day and
+is one table per agent, without a combined total or outcomes section. Each table contains rolling 5-minute, 24-hour, 7-day and
 30-day windows, counts, input/output tokens, summed time, and averages.
 
 ```bash

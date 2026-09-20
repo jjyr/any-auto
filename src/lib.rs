@@ -17,3 +17,5 @@ pub(crate) mod usage;
 mod review_input;
 
 pub mod uninstall;
+
+mod authorization;

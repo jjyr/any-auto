@@ -146,10 +146,11 @@ is required by the implementation. Disk state survives eviction and is loaded on
 
 The extension now reads role=user `SessionMessageEntry` values from the active
 `getBranch()` path before each tool call. It forwards the latest user message,
-prior user messages, entry IDs, and completeness status through the hook and
+up to four prior user messages, entry IDs, and completeness status through the hook and
 private daemon request to every backend. Message content may be a string or text
-and image blocks; images, missing history, and budget limits mark evidence
-incomplete rather than inventing authorization. Assistant and tool-result entries
+and image blocks. Collection stops after five user messages; older entries are
+outside the selected window. Images, compaction encountered within that window,
+and byte-budget limits mark evidence incomplete rather than inventing authorization. Assistant and tool-result entries
 are excluded. Compaction and branch summaries are not treated as user messages.
 
 The entry and context types were checked against the installed Pi declarations

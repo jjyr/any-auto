@@ -5,6 +5,8 @@ import { randomUUID } from "node:crypto";
 // The installer replaces this literal with the absolute executable path.
 const executable = "any-auto";
 
+const USER_MESSAGE_LIMIT = 5;
+
 // The active branch supplies user-origin evidence, never assistant summaries.
 function authorizationContext(ctx: ExtensionContext) {
   const unavailable = { availability: "unavailable", latest_user_message: null, relevant_prior_messages: [] };
@@ -13,13 +15,15 @@ function authorizationContext(ctx: ExtensionContext) {
     let truncated = false;
     let bytes = 0;
     for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+      // Older entries are outside the intended window, not missing evidence.
+      if (messages.length === USER_MESSAGE_LIMIT) break;
       if (entry.type === "compaction" || entry.type === "branch_summary") truncated = true;
       if (entry.type !== "message" || entry.message.role !== "user") continue;
       const content = entry.message.content;
       const text = typeof content === "string" ? content : content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
       if (Array.isArray(content) && content.some((part) => part.type !== "text")) truncated = true;
       bytes += Buffer.byteLength(text, "utf8");
-      if (bytes > 12 * 1024 || messages.length >= 32) { truncated = true; break; }
+      if (bytes > 12 * 1024) { truncated = true; break; }
       if (!text.trim()) { truncated = true; continue; }
       messages.push({ id: entry.id, role: "user", text, source: "current_branch" });
     }
