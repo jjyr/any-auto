@@ -162,14 +162,13 @@ async fn main() -> Result<()> {
             anyhow::ensure!(value["allowed"].is_boolean(), "Missing human decision");
             if value["allowed"] == true
                 && let Some(session) = value["conversation_id"].as_str().filter(|s| !s.is_empty())
+                && pipeline::Breaker::open(&config::state_dir(), session)?.human_result(id, true)?
             {
-                if pipeline::Breaker::open(&config::state_dir(), session)?.human_result(id, true)? {
-                    audit::record(
-                        id,
-                        "circuit_breaker_reset",
-                        json!({"reason":"human_approval", "conversation_id":session}),
-                    );
-                }
+                audit::record(
+                    id,
+                    "circuit_breaker_reset",
+                    json!({"reason":"human_approval", "conversation_id":session}),
+                );
             }
             audit::record(id, "human_result", value.clone());
         }
