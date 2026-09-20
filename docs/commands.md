@@ -173,6 +173,27 @@ Transport credentials and authentication headers are not included. Secrets prese
 in the request body itself are preserved, so treat these snapshots as sensitive.
 They use the same 0600 audit files and retention policy as other events. Disable the setting when finished.
 
+## Reviewer evaluation
+
+`any-auto reviewer-eval` runs maintained JSONL suites directly against the configured
+Jev reviewer, without executing fixture actions or using production approval state.
+
+```bash
+any-auto reviewer-eval --agent agy-cli \
+  --suite evals/suites/scenarios.jsonl --repeat 3 --output /tmp/baseline.json
+any-auto reviewer-eval --agent agy-cli \
+  --suite evals/suites/scenarios.jsonl --questions /tmp/candidate.json \
+  --repeat 3 --compare /tmp/baseline.json --output /tmp/candidate-report.json
+```
+
+The default terminal summary shows result counts, total and per-scenario tokens
+(input/output/combined), and elapsed time. Use --json for machine-readable stdout.
+Full reports include probabilities, false approvals/rejections, service errors,
+decision instability and baseline improvements/regressions. Missing token usage
+is marked partial; available usage from retry responses is included. Calls are bounded by
+`--max-calls`; retries default to zero. Suites live separately under `evals/`.
+See [evaluation fixtures and report semantics](../evals/README.md).
+
 ## Stats: usage and latency aggregates
 
 Stats answer **which agent/backend consumed the reviews and tokens?** Default output

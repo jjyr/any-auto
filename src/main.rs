@@ -29,6 +29,11 @@ enum Commands {
     HumanResult,
     /// Check agent detection and local reviewer readiness without model requests.
     Doctor,
+    /// Evaluate fixture suites without executing actions or touching approval state (Jev).
+    ReviewerEval {
+        #[command(flatten)]
+        options: any_auto::reviewer_eval::Options,
+    },
     /// Show rolling model approval usage, grouped by agent plus totals by default.
     Stats {
         #[arg(long, value_enum, default_value = "agent")]
@@ -144,6 +149,7 @@ async fn main() -> Result<()> {
     };
     match command {
         Commands::Doctor => install::doctor()?,
+        Commands::ReviewerEval { options } => any_auto::reviewer_eval::run(options).await?,
         Commands::HumanResult => {
             let mut bytes = Vec::new();
             std::io::stdin().take(65537).read_to_end(&mut bytes)?;

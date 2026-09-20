@@ -19,3 +19,5 @@ mod review_input;
 pub mod uninstall;
 
 mod authorization;
+
+pub mod reviewer_eval;

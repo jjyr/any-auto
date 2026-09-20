@@ -25,7 +25,29 @@ pub fn request_id() -> String {
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
 }
+// Evaluation captures audit events in memory instead of writing production logs.
+tokio::task_local! { static CAPTURE: std::cell::RefCell<Vec<Value>>; }
+pub(crate) async fn capture<F: std::future::Future>(future: F) -> (F::Output, Vec<Value>) {
+    CAPTURE
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            let output = future.await;
+            let events = CAPTURE.with(|events| events.take());
+            (output, events)
+        })
+        .await
+}
+
 pub fn record(id: &str, event: &str, data: Value) {
+    if CAPTURE
+        .try_with(|events| {
+            events
+                .borrow_mut()
+                .push(json!({"id":id,"event":event,"data":data}))
+        })
+        .is_ok()
+    {
+        return;
+    }
     if let Err(error) = append(id, event, data) {
         eprintln!("any-auto: unable to write approval history: {error}");
     }

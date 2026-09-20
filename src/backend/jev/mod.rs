@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Instant};
 
+pub(crate) const RUBRIC_VERSION: &str = "jev-review-v4";
+pub(crate) const DECISION_POLICY_VERSION: &str = "jev-decision-v3";
+
 const RISK: &[&str] = &["low", "medium", "high", "critical", "unknown"];
 const AUTH: &[&str] = &["high", "medium", "low", "unknown"];
 const POLICY: &[&str] = &["permitted", "prohibited", "needs_confirmation", "unknown"];
@@ -177,25 +180,41 @@ fn decision(response: &Response, input: &ReviewInput, threshold: f64) -> Assessm
         ),
         error_stage: None,
         reviewer: Some(json!({"model":response.model, "answers":a,
-            "probability_threshold":threshold,"approval_checks":checks,"failed_checks":failed,"rule_id":rule,"rubric_version":"jev-review-v4","decision_policy_version":"jev-decision-v3"})),
+            "probability_threshold":threshold,"approval_checks":checks,"failed_checks":failed,"rule_id":rule,"rubric_version":RUBRIC_VERSION,"decision_policy_version":DECISION_POLICY_VERSION})),
     }
 }
 
 pub struct JevBackend {
     config: ReviewerConfig,
     client: client::JevClient,
+    evaluation_questions: Option<Value>,
 }
 impl JevBackend {
     pub fn new(config: ReviewerConfig) -> Result<Self> {
         Ok(Self {
             client: client::JevClient::new(&config.approver.base_url)?,
+            evaluation_questions: None,
             config,
         })
+    }
+    pub(crate) fn for_evaluation(
+        config: ReviewerConfig,
+        questions: Value,
+        retries: u32,
+    ) -> Result<Self> {
+        let mut backend = Self::new(config)?;
+        backend.evaluation_questions = Some(questions);
+        backend.client.retries = retries;
+        backend.client.collect_usage = true;
+        Ok(backend)
     }
     async fn evaluate(&self, input: &ReviewInput) -> Result<Assessment> {
         let key = &self.config.approver.api_key;
         ensure!(!key.trim().is_empty(), "Jev API key is empty");
-        let questions = questions(&self.config.approver.instructions);
+        let questions = self
+            .evaluation_questions
+            .clone()
+            .unwrap_or_else(|| questions(&self.config.approver.instructions));
         let body =
             json!({"model":self.config.approver.model,"state":input.state,"questions":questions});
         ensure!(
@@ -238,6 +257,9 @@ impl JevBackend {
             "usage_delta":tokens,"usage_valid":!tokens.is_null(),"exit_code":0,"duration_ms":started.elapsed().as_millis()}),
         );
         let mut result = decision(&response, input, self.config.approver.probability_threshold);
+        if self.evaluation_questions.is_some() {
+            result.reviewer.as_mut().unwrap()["rubric_version"] = json!("evaluation");
+        }
         use sha2::{Digest, Sha256};
         result.reviewer.as_mut().unwrap()["rubric_hash"] = json!(format!(
             "{:x}",

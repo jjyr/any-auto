@@ -97,6 +97,12 @@ pub struct ReviewInput {
 }
 impl ReviewInput {
     pub fn from_request(req: &Value) -> Self {
+        Self::build(req, true)
+    }
+    pub(crate) fn from_fixture(req: &Value) -> Self {
+        Self::build(req, false)
+    }
+    fn build(req: &Value, inspect_files: bool) -> Self {
         let request_id = req["request_id"]
             .as_str()
             .map(str::to_owned)
@@ -113,7 +119,7 @@ impl ReviewInput {
         let (evidence, script_status) = if action["tool"] == "run_command" {
             scripts(
                 action["args"]["CommandLine"].as_str().unwrap_or(""),
-                &workspaces,
+                if inspect_files { &workspaces } else { &[] },
                 action["args"]["Cwd"].as_str(),
             )
         } else {
