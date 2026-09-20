@@ -23,10 +23,17 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
+    /// Record completion of an agy tool step (internal PostToolUse protocol).
+    PostTool,
     /// Record a Pi user confirmation (internal extension protocol).
     HumanResult,
     /// Check agent detection and local reviewer readiness without model requests.
     Doctor,
+    /// Evaluate fixture suites without executing actions or touching approval state (Jev).
+    ReviewerEval {
+        #[command(flatten)]
+        options: any_auto::reviewer_eval::Options,
+    },
     /// Show rolling model approval usage, grouped by agent plus totals by default.
     Stats {
         #[arg(long, value_enum, default_value = "agent")]
@@ -127,7 +134,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "default".into()),
     )?;
     config::set_mode(cli.mode.unwrap_or_else(|| {
-        if matches!(cli.command, Some(Commands::Hook)) {
+        if matches!(cli.command, Some(Commands::Hook | Commands::PostTool)) {
             config::Mode::for_hook()
         } else {
             config::Mode::Cli
@@ -142,6 +149,7 @@ async fn main() -> Result<()> {
     };
     match command {
         Commands::Doctor => install::doctor()?,
+        Commands::ReviewerEval { options } => any_auto::reviewer_eval::run(options).await?,
         Commands::HumanResult => {
             let mut bytes = Vec::new();
             std::io::stdin().take(65537).read_to_end(&mut bytes)?;
@@ -154,8 +162,13 @@ async fn main() -> Result<()> {
             anyhow::ensure!(value["allowed"].is_boolean(), "Missing human decision");
             if value["allowed"] == true
                 && let Some(session) = value["conversation_id"].as_str().filter(|s| !s.is_empty())
+                && pipeline::Breaker::open(&config::state_dir(), session)?.human_result(id, true)?
             {
-                pipeline::Breaker::open(&config::state_dir(), session)?.record("allow")?;
+                audit::record(
+                    id,
+                    "circuit_breaker_reset",
+                    json!({"reason":"human_approval", "conversation_id":session}),
+                );
             }
             audit::record(id, "human_result", value.clone());
         }
@@ -169,6 +182,20 @@ async fn main() -> Result<()> {
             cli.instance.as_deref(),
             (!no_group).then_some(group_by),
         )?,
+        Commands::PostTool => {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= 1024 * 1024, "PostToolUse input too large");
+            let payload: Value = serde_json::from_slice(&bytes)?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                pipeline::post_tool(&payload),
+            )
+            .await??;
+            println!("{{}}");
+        }
         Commands::Hook => {
             let mut bytes = Vec::new();
             let parsed = std::io::stdin()

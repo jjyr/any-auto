@@ -224,7 +224,7 @@ impl Bridge {
             id,
             "reviewer_input",
             json!({"action":input.state["action"],
-            "completeness":input.state["completeness"], "user_session_id":req["user_session_id"]}),
+            "completeness":input.state["completeness"], "authorization_diagnostics":input.authorization_diagnostics, "user_session_id":req["user_session_id"]}),
         );
         let backend = self.backend.as_mut().expect("configured backend");
         let mut assessment = match backend.review(&input).await {

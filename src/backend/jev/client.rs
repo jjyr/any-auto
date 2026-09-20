@@ -32,6 +32,8 @@ pub(crate) fn endpoint(base: &str) -> Result<Url> {
 pub struct JevClient {
     http: Client,
     url: Url,
+    pub(crate) retries: u32,
+    pub(crate) collect_usage: bool,
 }
 struct Failure {
     message: String,
@@ -80,13 +82,21 @@ impl JevClient {
         }
         Ok(Self {
             url: endpoint(base)?,
+            retries: 2,
+            collect_usage: false,
             http: builder
                 .build()
                 .map_err(|_| anyhow!("Cannot initialize Jev HTTP client"))?,
         })
     }
 
-    async fn attempt(&self, key: &str, body: &Value) -> std::result::Result<Value, Failure> {
+    async fn attempt(
+        &self,
+        key: &str,
+        body: &Value,
+        id: &str,
+        attempt: u32,
+    ) -> std::result::Result<Value, Failure> {
         let mut response = self
             .http
             .post(self.url.clone())
@@ -102,6 +112,21 @@ impl JevClient {
                 .get("retry-after")
                 .and_then(|h| h.to_str().ok())
                 .and_then(retry_after);
+            if self.collect_usage {
+                // Keep error bodies private; retain only numeric usage for evaluation.
+                let mut bytes = Vec::new();
+                while let Ok(Some(chunk)) = response.chunk().await {
+                    if bytes.len() + chunk.len() > MAX_BODY {
+                        break;
+                    }
+                    bytes.extend_from_slice(&chunk);
+                }
+                self.record_usage(
+                    id,
+                    attempt,
+                    &serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+                );
+            }
             return Err(Failure {
                 message: format!("Jev request failed with HTTP {}", status.as_u16()),
                 retry: matches!(status.as_u16(), 408 | 429 | 500..=599),
@@ -119,22 +144,35 @@ impl JevClient {
             }
             bytes.extend_from_slice(&chunk);
         }
-        serde_json::from_slice(&bytes).map_err(|_| Failure {
+        let value = serde_json::from_slice(&bytes).map_err(|_| Failure {
             message: "Invalid Jev response JSON".into(),
             retry: false,
             delay: None,
-        })
+        })?;
+        if self.collect_usage {
+            self.record_usage(id, attempt, &value);
+        }
+        Ok(value)
+    }
+    fn record_usage(&self, id: &str, attempt: u32, value: &Value) {
+        audit::record(
+            id,
+            "jev_attempt_usage",
+            json!({"attempt":attempt,
+            "usage_delta":{"input_tokens":value["usage"]["input_tokens"].as_u64(),
+                "output_tokens":value["usage"]["output_tokens"].as_u64()}}),
+        );
     }
     pub async fn evaluate(&self, key: &str, body: &Value, id: &str) -> Result<Value> {
         let deadline = Instant::now() + BUDGET;
         tokio::time::timeout_at(deadline, async {
-            for attempt in 0..=2u32 {
+            for attempt in 0..=self.retries {
                 audit::record(id, "backend_request", json!({"provider":"jev", "attempt":attempt + 1}));
                 let started = Instant::now();
-                match self.attempt(key, body).await {
+                match self.attempt(key, body, id, attempt + 1).await {
                     Ok(value) => return Ok(value),
                     Err(failure) => {
-                        if !failure.retry || attempt == 2 { return Err(anyhow!(failure.message)); }
+                        if !failure.retry || attempt == self.retries { return Err(anyhow!(failure.message)); }
                         let jitter = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().subsec_millis() % 126;
                         let delay = failure.delay.unwrap_or_else(|| Duration::from_millis((500u64 << attempt) + u64::from(jitter)));
                         if delay >= deadline.saturating_duration_since(Instant::now()) { return Err(anyhow!("Jev retry delay exceeds remaining review budget")); }

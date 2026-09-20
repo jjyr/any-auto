@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Instant};
 
+pub(crate) const RUBRIC_VERSION: &str = "jev-review-v4";
+pub(crate) const DECISION_POLICY_VERSION: &str = "jev-decision-v4";
+
 const RISK: &[&str] = &["low", "medium", "high", "critical", "unknown"];
 const AUTH: &[&str] = &["high", "medium", "low", "unknown"];
 const POLICY: &[&str] = &["permitted", "prohibited", "needs_confirmation", "unknown"];
@@ -98,8 +101,48 @@ fn parse(value: Value) -> Result<Response> {
     response.answers.policy.validate(POLICY)?;
     Ok(response)
 }
+fn approval_checks(a: &Answers, input: &ReviewInput, threshold: f64) -> Value {
+    // Either route can authorize the action. Explicit authorization permits
+    // probability mass split across low and medium risk, regardless of which wins.
+    let low_risk_allowed = a.risk.choice == "low"
+        && a.risk.p("low") >= threshold
+        && matches!(a.authorization.choice.as_str(), "high" | "medium")
+        && a.authorization.p("high") + a.authorization.p("medium") >= threshold;
+    let explicit_allowed = matches!(a.risk.choice.as_str(), "low" | "medium")
+        && a.risk.p("low") + a.risk.p("medium") >= threshold
+        && a.authorization.choice == "high"
+        && a.authorization.p("high") >= threshold;
+    // Report the passing route; on denial retain the selected risk's diagnostics.
+    let medium_risk = !low_risk_allowed && (explicit_allowed || a.risk.choice == "medium");
+    let risk_choices = if medium_risk {
+        vec!["low", "medium"]
+    } else {
+        vec!["low"]
+    };
+    let auth_choices = if medium_risk {
+        vec!["high"]
+    } else {
+        vec!["high", "medium"]
+    };
+    let risk_probability = risk_choices.iter().map(|key| a.risk.p(key)).sum::<f64>();
+    let auth_probability = auth_choices
+        .iter()
+        .map(|key| a.authorization.p(key))
+        .sum::<f64>();
+    json!({
+        "evidence": {"passed": input.complete()},
+        "risk": {"passed": risk_choices.contains(&a.risk.choice.as_str()) && risk_probability >= threshold,
+            "accepted_choices":risk_choices, "choice": a.risk.choice, "probability": risk_probability, "threshold": threshold},
+        "authorization": {"passed": auth_choices.contains(&a.authorization.choice.as_str()) && auth_probability >= threshold,
+            "accepted_choices":auth_choices, "choice": a.authorization.choice,
+            "probability": auth_probability, "threshold": threshold},
+        "policy": {"passed": a.policy.choice == "permitted" && a.policy.p("permitted") >= threshold,
+            "accepted_choices":["permitted"], "choice": a.policy.choice, "probability": a.policy.p("permitted"), "threshold": threshold}
+    })
+}
 fn decision(response: &Response, input: &ReviewInput, threshold: f64) -> Assessment {
     let a = &response.answers;
+    let checks = approval_checks(a, input, threshold);
     let (outcome, rule) = if (a.policy.choice == "prohibited"
         && a.policy.p("prohibited") >= threshold)
         || (a.risk.choice == "critical" && a.risk.p("critical") >= threshold)
@@ -107,54 +150,108 @@ fn decision(response: &Response, input: &ReviewInput, threshold: f64) -> Assessm
         ("deny", "prohibited_or_critical")
     } else if !input.complete() {
         ("deny", "incomplete_evidence")
-    } else if a.risk.choice == "low"
-        && a.risk.p("low") >= threshold
-        && matches!(a.authorization.choice.as_str(), "high" | "medium")
-        && a.authorization.p("high") + a.authorization.p("medium") >= threshold
-        && a.policy.choice == "permitted"
-        && a.policy.p("permitted") >= threshold
+    } else if ["risk", "authorization", "policy"]
+        .iter()
+        .all(|key| checks[*key]["passed"] == true)
     {
         ("allow", "approval_thresholds_met")
     } else {
         ("deny", "confirmation_or_uncertainty")
     };
+    let failed: Vec<_> = ["evidence", "risk", "authorization", "policy"]
+        .into_iter()
+        .filter(|key| checks[*key]["passed"] == false)
+        .collect();
+    let failures = failed
+        .iter()
+        .map(|key| {
+            let check = &checks[*key];
+            if *key == "evidence" {
+                "evidence incomplete".to_owned()
+            } else {
+                format!(
+                    "{key}(choice={}, probability={:.4}, required>={threshold}, accepted_choices={})",
+                    check["choice"].as_str().unwrap(),
+                    check["probability"].as_f64().unwrap(),
+                    check["accepted_choices"]
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     Assessment {
         outcome: outcome.into(),
         risk_level: a.risk.choice.clone(),
         user_authorization: a.authorization.choice.clone(),
         rationale: format!(
-            "Jev: {outcome}; rule={rule}; risk={}, authorization={}, policy={}, probability threshold={threshold}.",
+            "Jev: {outcome}; rule={rule}; risk={}, authorization={}, policy={}, probability threshold={threshold}; failed_checks=[{failures}].",
             a.risk.choice, a.authorization.choice, a.policy.choice
         ),
         error_stage: None,
         reviewer: Some(json!({"model":response.model, "answers":a,
-            "probability_threshold":threshold,"rule_id":rule,"rubric_version":"jev-review-v2","decision_policy_version":"jev-decision-v2"})),
+            "probability_threshold":threshold,"approval_checks":checks,"failed_checks":failed,"rule_id":rule,"rubric_version":RUBRIC_VERSION,"decision_policy_version":DECISION_POLICY_VERSION})),
     }
 }
 
 pub struct JevBackend {
     config: ReviewerConfig,
     client: client::JevClient,
+    evaluation_questions: Option<Value>,
 }
 impl JevBackend {
     pub fn new(config: ReviewerConfig) -> Result<Self> {
         Ok(Self {
             client: client::JevClient::new(&config.approver.base_url)?,
+            evaluation_questions: None,
             config,
         })
+    }
+    pub(crate) fn for_evaluation(
+        config: ReviewerConfig,
+        questions: Value,
+        retries: u32,
+    ) -> Result<Self> {
+        let mut backend = Self::new(config)?;
+        backend.evaluation_questions = Some(questions);
+        backend.client.retries = retries;
+        backend.client.collect_usage = true;
+        Ok(backend)
     }
     async fn evaluate(&self, input: &ReviewInput) -> Result<Assessment> {
         let key = &self.config.approver.api_key;
         ensure!(!key.trim().is_empty(), "Jev API key is empty");
-        let questions = questions(&self.config.approver.instructions);
+        let questions = self
+            .evaluation_questions
+            .clone()
+            .unwrap_or_else(|| questions(&self.config.approver.instructions));
         let body =
             json!({"model":self.config.approver.model,"state":input.state,"questions":questions});
         ensure!(
             serde_json::to_vec(&body)?.len() <= 24 * 1024,
             "Jev request exceeds 24 KiB evidence budget"
         );
+        audit::record(
+            &input.request_id,
+            "jev_rubric",
+            json!({"questions":questions}),
+        );
+        let snapshot = self.config.approver.diagnostic_snapshot;
+        if snapshot {
+            audit::record(
+                &input.request_id,
+                "jev_diagnostic_request",
+                json!({"body":body}),
+            );
+        }
         let started = Instant::now();
         let response = parse(self.client.evaluate(key, &body, &input.request_id).await?)?;
+        if snapshot {
+            audit::record(
+                &input.request_id,
+                "jev_diagnostic_response",
+                json!({"model":response.model,"answers":response.answers}),
+            );
+        }
         let tokens = match (
             response.usage["input_tokens"].as_u64(),
             response.usage["output_tokens"].as_u64(),
@@ -169,6 +266,9 @@ impl JevBackend {
             "usage_delta":tokens,"usage_valid":!tokens.is_null(),"exit_code":0,"duration_ms":started.elapsed().as_millis()}),
         );
         let mut result = decision(&response, input, self.config.approver.probability_threshold);
+        if self.evaluation_questions.is_some() {
+            result.reviewer.as_mut().unwrap()["rubric_version"] = json!("evaluation");
+        }
         use sha2::{Digest, Sha256};
         result.reviewer.as_mut().unwrap()["rubric_hash"] = json!(format!(
             "{:x}",
@@ -260,6 +360,170 @@ mod tests {
         input.state["completeness"]["authorization"] = json!("unavailable");
         assert_eq!(
             decision(&parse(value).unwrap(), &input, 0.9).outcome,
+            "deny"
+        );
+    }
+    #[test]
+    fn diagnostics_identify_authorization_threshold_and_choice_failures() {
+        let mut value = response();
+        value["answers"]["authorization"] = choice(
+            "medium",
+            json!({"high":0.03,"medium":0.63,"low":0.27,"unknown":0.07}),
+        );
+        let assessment = decision(&parse(value.clone()).unwrap(), &input(), 0.85);
+        assert_eq!(assessment.outcome, "deny");
+        let metadata = assessment.reviewer.unwrap();
+        assert_eq!(metadata["failed_checks"], json!(["authorization"]));
+        assert_eq!(
+            metadata["approval_checks"]["authorization"]["probability"],
+            0.66
+        );
+        assert!(
+            assessment
+                .rationale
+                .contains("probability=0.6600, required>=0.85")
+        );
+        value["answers"]["authorization"] = choice(
+            "low",
+            json!({"high":0.03,"medium":0.31,"low":0.56,"unknown":0.10}),
+        );
+        let assessment = decision(&parse(value).unwrap(), &input(), 0.0);
+        assert_eq!(assessment.outcome, "deny");
+        assert_eq!(
+            assessment.reviewer.unwrap()["failed_checks"],
+            json!(["authorization"])
+        );
+        assert!(assessment.rationale.contains("choice=low"));
+    }
+    fn medium_risk_response() -> Value {
+        let mut value = response();
+        value["answers"]["risk"] = choice(
+            "medium",
+            json!({"low":0.25,"medium":0.60,"high":0.10,"critical":0.03,"unknown":0.02}),
+        );
+        value["answers"]["authorization"] = choice(
+            "high",
+            json!({"high":0.85,"medium":0.10,"low":0.03,"unknown":0.02}),
+        );
+        value
+    }
+    #[test]
+    fn medium_risk_requires_explicit_authorization_and_reports_actual_gates() {
+        let response = parse(medium_risk_response()).unwrap();
+        let assessment = decision(&response, &input(), 0.85);
+        assert_eq!(assessment.outcome, "allow");
+        let metadata = assessment.reviewer.unwrap();
+        assert_eq!(metadata["approval_checks"]["risk"]["probability"], 0.85);
+        assert_eq!(
+            metadata["approval_checks"]["risk"]["accepted_choices"],
+            json!(["low", "medium"])
+        );
+        assert_eq!(
+            metadata["approval_checks"]["authorization"]["probability"],
+            0.85
+        );
+        assert_eq!(
+            metadata["approval_checks"]["authorization"]["accepted_choices"],
+            json!(["high"])
+        );
+        assert_eq!(decision(&response, &input(), 0.851).outcome, "deny");
+        for auth in [
+            choice(
+                "high",
+                json!({"high":0.84,"medium":0.16,"low":0.0,"unknown":0.0}),
+            ),
+            choice(
+                "medium",
+                json!({"high":0.4,"medium":0.6,"low":0.0,"unknown":0.0}),
+            ),
+        ] {
+            let mut value = medium_risk_response();
+            value["answers"]["authorization"] = auth;
+            let assessment = decision(&parse(value).unwrap(), &input(), 0.85);
+            assert_eq!(assessment.outcome, "deny");
+            assert_eq!(
+                assessment.reviewer.unwrap()["failed_checks"],
+                json!(["authorization"])
+            );
+        }
+    }
+    #[test]
+    fn medium_risk_keeps_evidence_policy_and_unsupported_class_guards() {
+        let mut missing = input();
+        missing.state["completeness"]["authorization"] = json!("unavailable");
+        assert_eq!(
+            decision(&parse(medium_risk_response()).unwrap(), &missing, 0.85).outcome,
+            "deny"
+        );
+        for selected in ["prohibited", "needs_confirmation", "unknown"] {
+            let mut value = medium_risk_response();
+            let mut probabilities =
+                json!({"permitted":0.0,"prohibited":0.0,"needs_confirmation":0.0,"unknown":0.0});
+            probabilities[selected] = json!(1.0);
+            value["answers"]["policy"] = choice(selected, probabilities);
+            assert_eq!(
+                decision(&parse(value).unwrap(), &input(), 0.85).outcome,
+                "deny"
+            );
+        }
+        for selected in ["high", "critical", "unknown"] {
+            let mut value = medium_risk_response();
+            let mut probabilities =
+                json!({"low":0.0,"medium":0.0,"high":0.0,"critical":0.0,"unknown":0.0});
+            probabilities[selected] = json!(1.0);
+            value["answers"]["risk"] = choice(selected, probabilities);
+            assert_eq!(
+                decision(&parse(value).unwrap(), &input(), 0.0).outcome,
+                "deny"
+            );
+        }
+    }
+    #[test]
+    fn split_low_medium_risk_allows_only_with_explicit_authorization() {
+        // Regression: the three live evaluations all chose low but split its mass.
+        for (low, medium) in [(0.61, 0.39), (0.52, 0.48), (0.60, 0.40)] {
+            let mut value = medium_risk_response();
+            value["answers"]["risk"] = choice(
+                "low",
+                json!({"low":low,"medium":medium,"high":0.0,"critical":0.0,"unknown":0.0}),
+            );
+            let assessment = decision(&parse(value.clone()).unwrap(), &input(), 0.85);
+            assert_eq!(assessment.outcome, "allow");
+            let metadata = assessment.reviewer.unwrap();
+            assert_eq!(metadata["failed_checks"], json!([]));
+            assert_eq!(
+                metadata["approval_checks"]["risk"]["accepted_choices"],
+                json!(["low", "medium"])
+            );
+            assert_eq!(
+                metadata["approval_checks"]["authorization"]["accepted_choices"],
+                json!(["high"])
+            );
+            for auth in [
+                choice(
+                    "high",
+                    json!({"high":0.84,"medium":0.16,"low":0.0,"unknown":0.0}),
+                ),
+                choice(
+                    "medium",
+                    json!({"high":0.4,"medium":0.6,"low":0.0,"unknown":0.0}),
+                ),
+            ] {
+                value["answers"]["authorization"] = auth;
+                assert_eq!(
+                    decision(&parse(value.clone()).unwrap(), &input(), 0.85).outcome,
+                    "deny"
+                );
+            }
+        }
+        // Explicit authorization cannot compensate for insufficient risk probability.
+        let mut value = medium_risk_response();
+        value["answers"]["risk"] = choice(
+            "low",
+            json!({"low":0.60,"medium":0.24,"high":0.16,"critical":0.0,"unknown":0.0}),
+        );
+        assert_eq!(
+            decision(&parse(value).unwrap(), &input(), 0.85).outcome,
             "deny"
         );
     }

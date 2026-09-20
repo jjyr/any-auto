@@ -290,6 +290,11 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
         .unwrap();
     assert!(command.contains(env!("CARGO_BIN_EXE_any-auto")));
     assert!(!command.contains("python"));
+    let post_command = v["any-auto"]["PostToolUse"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap();
+    assert!(post_command.contains(env!("CARGO_BIN_EXE_any-auto")));
+    assert!(post_command.ends_with(" post-tool"));
     assert!(
         s.run(&["install", "--agents", "agy-cli,agy-desktop"])
             .status

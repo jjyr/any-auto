@@ -5,7 +5,7 @@ checkout, select `agy/`, not the repository root. The `any-auto` executable must
 be available on PATH for direct plugin loading.
 
 - `plugin.json`: plugin identity and description.
-- `hooks.json`: CLI/Desktop approval hook template.
+- `hooks.json`: PreToolUse approval and PostToolUse circuit-breaker recovery hooks.
 - `sidecars/approver/sidecar.json`: Desktop bootstrap for the shared daemon.
 
 The Rust installer embeds these templates, replaces the executable with its

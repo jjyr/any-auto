@@ -25,7 +25,29 @@ pub fn request_id() -> String {
         SEQUENCE.fetch_add(1, Ordering::Relaxed)
     )
 }
+// Evaluation captures audit events in memory instead of writing production logs.
+tokio::task_local! { static CAPTURE: std::cell::RefCell<Vec<Value>>; }
+pub(crate) async fn capture<F: std::future::Future>(future: F) -> (F::Output, Vec<Value>) {
+    CAPTURE
+        .scope(std::cell::RefCell::new(Vec::new()), async {
+            let output = future.await;
+            let events = CAPTURE.with(|events| events.take());
+            (output, events)
+        })
+        .await
+}
+
 pub fn record(id: &str, event: &str, data: Value) {
+    if CAPTURE
+        .try_with(|events| {
+            events
+                .borrow_mut()
+                .push(json!({"id":id,"event":event,"data":data}))
+        })
+        .is_ok()
+    {
+        return;
+    }
     if let Err(error) = append(id, event, data) {
         eprintln!("any-auto: unable to write approval history: {error}");
     }
@@ -48,7 +70,7 @@ fn append(id: &str, event: &str, data: Value) -> Result<()> {
     } else {
         json!({"provider":settings.as_ref().map(|c| c.provider),"model":settings.as_ref().and_then(|c| c.model.as_ref()),"effort_requested":settings.as_ref().and_then(|c| c.effort.as_ref())})
     };
-    let entry = json!({"schema_version":3,
+    let entry = json!({"schema_version":3, "build_version":env!("CARGO_PKG_VERSION"),
         "agent":config::mode().agent(), "instance":config::instance(),
         "provider":reviewer["provider"],
         "model":reviewer["model"],
