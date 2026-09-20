@@ -50,21 +50,23 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
         .as_str()
         .context("Plugin template requires name")?;
     let mut hooks: Value = serde_json::from_str(include_str!("../agy/hooks.json"))?;
-    let entries = hooks[plugin_name]["PreToolUse"]
-        .as_array_mut()
-        .context("Hook template requires PreToolUse")?;
-    for entry in entries {
-        for hook in entry["hooks"]
+    for event in ["PreToolUse", "PostToolUse"] {
+        let entries = hooks[plugin_name][event]
             .as_array_mut()
-            .context("Hook template requires hooks")?
-        {
-            let command = hook["command"]
-                .as_str()
-                .context("Hook template requires command")?;
-            let args = command
-                .strip_prefix(&format!("{plugin_name} "))
-                .context("Unexpected hook executable in template")?;
-            hook["command"] = json!(format!("{quoted} {args}"));
+            .context("Hook template requires tool events")?;
+        for entry in entries {
+            for hook in entry["hooks"]
+                .as_array_mut()
+                .context("Hook template requires hooks")?
+            {
+                let command = hook["command"]
+                    .as_str()
+                    .context("Hook template requires command")?;
+                let args = command
+                    .strip_prefix(&format!("{plugin_name} "))
+                    .context("Unexpected hook executable in template")?;
+                hook["command"] = json!(format!("{quoted} {args}"));
+            }
         }
     }
     let mut sidecar: Value =

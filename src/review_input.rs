@@ -50,9 +50,50 @@ fn authorization(raw: &Value) -> Value {
     serde_json::to_value(value).expect("serializable authorization")
 }
 
+/// Fingerprint only validated user-origin evidence; never use tool/assistant text
+/// or request IDs to decide whether a new user turn has begun.
+pub(crate) fn authorization_epoch(raw: &Value) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let auth = authorization(raw);
+    (auth["availability"] == "available").then(|| {
+        format!(
+            "{:x}",
+            Sha256::digest(auth["latest_user_message"].to_string().as_bytes())
+        )
+    })
+}
+
+// Metadata only: never copy message text into default audit events.
+fn authorization_diagnostics(raw: &Value, normalized: &Value) -> Value {
+    fn summary(auth: &Value) -> Value {
+        let messages: Vec<_> = auth["latest_user_message"]
+            .as_object()
+            .map(|_| &auth["latest_user_message"])
+            .into_iter()
+            .chain(
+                auth["relevant_prior_messages"]
+                    .as_array()
+                    .into_iter()
+                    .flatten(),
+            )
+            .map(|m| {
+                json!({"id":m["id"].as_str(),"source":m["source"].as_str(),
+                "text_bytes":m["text"].as_str().map(str::len)})
+            })
+            .collect();
+        json!({"availability":auth["availability"].as_str(),"serialized_bytes":auth.to_string().len(),
+            "message_count":messages.len(),"messages":messages})
+    }
+    json!({"received":summary(raw),"normalized":summary(normalized),
+        "byte_limit":AUTH_LIMIT,"normalization_changed":raw != normalized,
+        "upstream_truncated":raw["availability"] == "truncated",
+        "size_limit_exceeded":raw.to_string().len() > AUTH_LIMIT})
+}
+
 pub struct ReviewInput {
     pub request_id: String,
     pub state: Value,
+    pub authorization_diagnostics: Value,
 }
 impl ReviewInput {
     pub fn from_request(req: &Value) -> Self {
@@ -93,7 +134,13 @@ impl ReviewInput {
             "environment":{"workspace_paths":workspaces},
             "completeness":{"action":action_status,"authorization":auth["availability"],"script":script_status},
             "authorization":auth,"evidence":evidence});
-        Self { request_id, state }
+        let authorization_diagnostics =
+            authorization_diagnostics(&req["authorization"], &state["authorization"]);
+        Self {
+            request_id,
+            state,
+            authorization_diagnostics,
+        }
     }
     pub fn complete(&self) -> bool {
         self.state["completeness"]["action"] == "complete"
@@ -191,6 +238,34 @@ mod tests {
         );
         req["authorization"]["availability"] = json!("truncated");
         assert!(!ReviewInput::from_request(&req).complete());
+    }
+    #[test]
+    fn breaker_epoch_requires_valid_available_user_evidence() {
+        let mut auth = json!({"availability":"available", "latest_user_message":{
+            "id":"u1","role":"user","source":"branch","text":"review this file"}, "relevant_prior_messages":[]});
+        let first = authorization_epoch(&auth).unwrap();
+        assert_eq!(authorization_epoch(&auth).as_deref(), Some(first.as_str()));
+        auth["latest_user_message"]["id"] = json!("u2");
+        assert_ne!(authorization_epoch(&auth).unwrap(), first);
+        auth["latest_user_message"]["role"] = json!("assistant");
+        assert!(authorization_epoch(&auth).is_none());
+        auth["latest_user_message"]["role"] = json!("user");
+        auth["availability"] = json!("truncated");
+        assert!(authorization_epoch(&auth).is_none());
+        assert!(authorization_epoch(&Value::Null).is_none());
+    }
+    #[test]
+    fn diagnostics_preserve_lengths_when_oversized_authorization_is_discarded() {
+        let req = json!({"authorization":{"availability":"available",
+            "latest_user_message":{"id":"u1","role":"user","source":"branch","text":"私".repeat(AUTH_LIMIT)},
+            "relevant_prior_messages":[]}});
+        let input = ReviewInput::from_request(&req);
+        let d = input.authorization_diagnostics;
+        assert_eq!(d["received"]["messages"][0]["text_bytes"], AUTH_LIMIT * 3);
+        assert_eq!(d["normalized"]["message_count"], 0);
+        assert_eq!(d["normalized"]["availability"], "truncated");
+        assert_eq!(d["size_limit_exceeded"], true);
+        assert!(!d.to_string().contains("私"));
     }
     #[test]
     fn scripts_are_bounded_and_missing_evidence_is_explicit() {

@@ -12,10 +12,18 @@ fn truncated() -> Value {
     json!({"availability":"truncated","latest_user_message":null,"relevant_prior_messages":[]})
 }
 
+#[cfg(test)]
 pub(crate) fn from_agy_hook(payload: &Value) -> Value {
-    collect(payload).unwrap_or_else(unavailable)
+    from_agy_hook_with_diagnostics(payload).0
 }
-fn collect(payload: &Value) -> Option<Value> {
+pub(crate) fn from_agy_hook_with_diagnostics(payload: &Value) -> (Value, Value) {
+    let mut diagnostics = json!({"source":"agy_transcript", "message_limit":USER_MESSAGE_LIMIT,
+        "text_byte_limit":TEXT_LIMIT,"transcript_byte_limit":TRANSCRIPT_LIMIT});
+    let auth = collect(payload, &mut diagnostics).unwrap_or_else(unavailable);
+    diagnostics["availability"] = auth["availability"].clone();
+    (auth, diagnostics)
+}
+fn collect(payload: &Value, diagnostics: &mut Value) -> Option<Value> {
     let transcript = Path::new(payload["transcriptPath"].as_str()?);
     let artifact = Path::new(payload["artifactDirectoryPath"].as_str()?);
     let conversation = payload["conversationId"].as_str()?;
@@ -36,15 +44,20 @@ fn collect(payload: &Value) -> Option<Value> {
         .take(TRANSCRIPT_LIMIT + 1)
         .read_to_end(&mut bytes)
         .ok()?;
+    diagnostics["transcript_bytes_read"] = json!(bytes.len());
+    diagnostics["transcript_bytes_are_lower_bound"] = json!(bytes.len() as u64 > TRANSCRIPT_LIMIT);
     if bytes.len() as u64 > TRANSCRIPT_LIMIT {
+        diagnostics["limit_reached"] = json!("transcript_bytes");
         return Some(truncated());
     }
     let text = std::str::from_utf8(&bytes).ok()?;
     let mut messages = Vec::new();
     let mut total = 0;
     let mut previous_step = None;
+    diagnostics["message_window_limit_reached"] = json!(false);
     for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
         if messages.len() == USER_MESSAGE_LIMIT {
+            diagnostics["message_window_limit_reached"] = json!(true);
             break;
         }
         let entry: Value = serde_json::from_str(line).ok()?;
@@ -70,7 +83,9 @@ fn collect(payload: &Value) -> Option<Value> {
             continue;
         }
         total += content.len();
+        diagnostics["candidate_text_bytes"] = json!(total);
         if total > TEXT_LIMIT {
+            diagnostics["limit_reached"] = json!("text_bytes");
             return Some(truncated());
         }
         messages.push(json!({"id":format!("{conversation}:{step}"),"role":"user","text":content,"source":"agy_transcript"}));
@@ -78,7 +93,11 @@ fn collect(payload: &Value) -> Option<Value> {
     messages.reverse();
     let latest = messages.pop()?;
     let result = json!({"availability":"available","latest_user_message":latest,"relevant_prior_messages":messages});
+    diagnostics["selected_message_count"] =
+        json!(result["relevant_prior_messages"].as_array().unwrap().len() + 1);
+    diagnostics["selected_serialized_bytes"] = json!(result.to_string().len());
     if result.to_string().len() > 16 * 1024 {
+        diagnostics["limit_reached"] = json!("serialized_bytes");
         return Some(truncated());
     }
     Some(result)
@@ -127,7 +146,10 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         let (_dir, payload) = fixture(&records);
-        let auth = from_agy_hook(&payload);
+        let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
+        assert_eq!(diagnostics["message_window_limit_reached"], true);
+        assert_eq!(diagnostics["selected_message_count"], 5);
+        assert!(!diagnostics.to_string().contains("request 7"));
         assert_eq!(auth["availability"], "available");
         assert_eq!(auth["latest_user_message"]["text"], "request 7");
         assert_eq!(
@@ -144,7 +166,10 @@ mod tests {
     fn oversized_message_inside_recent_window_is_still_incomplete() {
         let record = json!({"step_index":1,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","content":"x".repeat(TEXT_LIMIT + 1)});
         let (_dir, payload) = fixture(&record.to_string());
-        assert_eq!(from_agy_hook(&payload)["availability"], "truncated");
+        let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
+        assert_eq!(auth["availability"], "truncated");
+        assert_eq!(diagnostics["limit_reached"], "text_bytes");
+        assert_eq!(diagnostics["candidate_text_bytes"], TEXT_LIMIT + 1);
     }
     #[test]
     fn malformed_missing_foreign_and_oversized_transcripts_never_supply_authorization() {

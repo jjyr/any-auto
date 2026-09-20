@@ -201,6 +201,7 @@ struct ApproverSettings {
     base_url: Option<String>,
     api_key: Option<String>,
     probability_threshold: Option<f64>,
+    diagnostic_snapshot: Option<bool>,
     instructions: Option<JevInstructions>,
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -249,6 +250,7 @@ pub struct ApproverConfig {
     #[serde(serialize_with = "serialize_api_key")]
     pub api_key: String,
     pub probability_threshold: f64,
+    pub diagnostic_snapshot: bool,
     pub instructions: JevInstructions,
 }
 #[derive(Clone, serde::Serialize)]
@@ -344,6 +346,7 @@ fn resolve_config(
         "base_url",
         "api_key",
         "probability_threshold",
+        "diagnostic_snapshot",
         "instructions",
         "instructions.risk",
         "instructions.authorization",
@@ -406,6 +409,9 @@ fn resolve_config(
     if agent.probability_threshold.is_some() {
         settings.probability_threshold = agent.probability_threshold;
     }
+    if agent.diagnostic_snapshot.is_some() {
+        settings.diagnostic_snapshot = agent.diagnostic_snapshot;
+    }
     if let Some(instructions) = agent.instructions {
         settings
             .instructions
@@ -423,6 +429,7 @@ fn resolve_config(
             settings.base_url = None;
             settings.api_key = None;
             settings.probability_threshold = None;
+            settings.diagnostic_snapshot = None;
             settings.instructions = None;
             sources.values_mut().for_each(|s| *s = "default".into());
         }
@@ -448,8 +455,10 @@ fn resolve_config(
     }
     anyhow::ensure!(
         provider == Provider::Jev
-            || (settings.probability_threshold.is_none() && settings.instructions.is_none()),
-        "probability_threshold and instructions are only supported by the Jev backend"
+            || (settings.probability_threshold.is_none()
+                && settings.instructions.is_none()
+                && settings.diagnostic_snapshot.is_none()),
+        "probability_threshold, diagnostic_snapshot and instructions are only supported by the Jev backend"
     );
     let probability_threshold = settings.probability_threshold.unwrap_or(0.9);
     anyhow::ensure!(
@@ -557,6 +566,7 @@ fn resolve_config(
         model: (!selected_model.trim().is_empty()).then(|| selected_model.trim().into()),
         effort,
         probability_threshold,
+        diagnostic_snapshot: settings.diagnostic_snapshot.unwrap_or(false),
         instructions,
         base_url: settings.base_url.unwrap_or_else(|| {
             if provider == Provider::Jev {
@@ -635,6 +645,11 @@ fn print_approver(
             "Threshold",
             "probability_threshold",
             &approver.probability_threshold.to_string(),
+        );
+        row(
+            "Diagnostic snapshot",
+            "diagnostic_snapshot",
+            &approver.diagnostic_snapshot.to_string(),
         );
         let defaults = crate::backend::jev::questions(&approver.instructions);
         for key in ["risk", "authorization", "policy"] {
@@ -812,6 +827,51 @@ mod jev_tests {
         )
         .unwrap();
         assert!(c.approver.instructions.risk.is_none());
+    }
+    #[test]
+    fn diagnostic_snapshot_defaults_inherits_and_overrides() {
+        assert!(
+            !resolve("[approver]\nprovider='jev'", Mode::Pi)
+                .unwrap()
+                .approver
+                .diagnostic_snapshot
+        );
+        let text = "[approver]\nprovider='jev'\ndiagnostic_snapshot=true\n[agents.pi.approver]\ndiagnostic_snapshot=false\n";
+        assert!(
+            resolve(text, Mode::Cli)
+                .unwrap()
+                .approver
+                .diagnostic_snapshot
+        );
+        let pi = resolve(text, Mode::Pi).unwrap();
+        assert!(!pi.approver.diagnostic_snapshot);
+        assert_eq!(
+            pi.approver_sources["diagnostic_snapshot"],
+            "[agents.pi.approver]"
+        );
+        assert!(
+            !resolve(
+                &format!("{text}\n[agents.agy-cli.approver]\nprovider='cli'"),
+                Mode::Cli
+            )
+            .unwrap()
+            .approver
+            .diagnostic_snapshot
+        );
+        assert!(
+            resolve(
+                "[approver]\nprovider='jev'\ndiagnostic_snapshot='true'",
+                Mode::Pi
+            )
+            .is_err()
+        );
+        assert!(
+            resolve(
+                "[approver]\nprovider='pi'\ndiagnostic_snapshot=true",
+                Mode::Pi
+            )
+            .is_err()
+        );
     }
     #[test]
     fn direct_keys_inherit_override_and_reset_with_provider() {

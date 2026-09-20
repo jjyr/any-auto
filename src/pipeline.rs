@@ -118,6 +118,54 @@ impl Breaker {
         }
         None
     }
+    pub fn reset(&mut self) -> Result<()> {
+        self.state["consecutive_denials"] = json!(0);
+        self.state["history"] = json!([]);
+        self.state
+            .as_object_mut()
+            .unwrap()
+            .remove("pending_escalation");
+        self.save()
+    }
+    fn observe_user(&mut self, epoch: &str) -> Result<bool> {
+        if self.state["authorization_epoch"] == epoch {
+            return Ok(false);
+        }
+        let had_denials = self.state["history"]
+            .as_array()
+            .is_some_and(|history| history.iter().any(|v| v == "deny"))
+            || self.state["consecutive_denials"].as_u64().unwrap_or(0) > 0;
+        self.state["authorization_epoch"] = json!(epoch);
+        self.reset()?;
+        Ok(had_denials)
+    }
+    fn escalate(&mut self, id: &str, step: Option<u64>) -> Result<()> {
+        self.state["pending_escalation"] = json!({"request_id":id,"step":step});
+        self.save()
+    }
+    pub fn human_result(&mut self, id: &str, allowed: bool) -> Result<bool> {
+        if !allowed || self.state["pending_escalation"]["request_id"] != id {
+            return Ok(false);
+        }
+        self.reset()?;
+        Ok(true)
+    }
+    fn completed_step(&mut self, step: u64) -> Result<Option<String>> {
+        if self.state["pending_escalation"]["step"].as_u64() != Some(step) {
+            return Ok(None);
+        }
+        let id = self.state["pending_escalation"]["request_id"]
+            .as_str()
+            .map(str::to_owned);
+        self.reset()?;
+        Ok(id)
+    }
+    fn save(&self) -> Result<()> {
+        let tmp = self.path.with_extension("tmp");
+        fs::write(&tmp, serde_json::to_vec(&self.state)?)?;
+        fs::rename(tmp, &self.path)?;
+        Ok(())
+    }
     pub fn record(&mut self, decision: &str) -> Result<()> {
         self.state["consecutive_denials"] = if decision == "deny" {
             self.state["consecutive_denials"].as_u64().unwrap_or(0) + 1
@@ -134,10 +182,7 @@ impl Breaker {
             h.drain(..h.len() - 5);
         }
         self.state["history"] = h.into();
-        let tmp = self.path.with_extension("tmp");
-        fs::write(&tmp, serde_json::to_vec(&self.state)?)?;
-        fs::rename(tmp, &self.path)?;
-        Ok(())
+        self.save()
     }
 }
 pub fn result(decision: &str, reason: &str, tool: &str, grants: Option<Vec<String>>) -> Value {
@@ -291,9 +336,40 @@ async fn evaluate_inner(
             );
         }
     };
-    if let Some(reason) = breaker.as_ref().and_then(Breaker::tripped) {
-        *stage = "circuit_breaker";
-        return result("force_ask", &reason, tool, None);
+    if let Some(b) = breaker.as_mut() {
+        let update = (|| -> Result<Option<String>> {
+            if let Some(epoch) = crate::review_input::authorization_epoch(&payload["authorization"])
+                && b.observe_user(&epoch)?
+            {
+                audit::record(
+                    id,
+                    "circuit_breaker_reset",
+                    json!({"reason":"new_user_message",
+                    "conversation_id":conversation_id(payload)}),
+                );
+            }
+            let reason = b.tripped();
+            if reason.is_some() {
+                b.escalate(id, payload["stepIdx"].as_u64())?;
+            }
+            Ok(reason)
+        })();
+        match update {
+            Ok(Some(reason)) => {
+                *stage = "circuit_breaker";
+                return result("force_ask", &reason, tool, None);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                *stage = "state_error";
+                return result(
+                    "deny",
+                    &format!("Cannot update circuit breaker: {error}"),
+                    tool,
+                    None,
+                );
+            }
+        }
     }
     let assessment = match daemon::review_traced(payload, id).await {
         Ok(a) => a,
@@ -324,13 +400,39 @@ async fn evaluate_inner(
     result(&assessment.outcome, &assessment.rationale, tool, grants)
 }
 
+/// Agy's PostToolUse callback identifies a completed step, not an approval.
+/// Only the exact step that previously received force_ask may end the pause.
+pub async fn post_tool(payload: &Value) -> Result<()> {
+    if config::mode() == config::Mode::Pi {
+        return Ok(());
+    }
+    let Some(session) = crate::sessions::user_session_id(payload) else {
+        return Ok(());
+    };
+    let Some(step) = payload["stepIdx"].as_u64() else {
+        return Ok(());
+    };
+    let mut breaker = Breaker::open_for_review(&config::state_dir(), session).await?;
+    if let Some(id) = breaker.completed_step(step)? {
+        audit::record(
+            &id,
+            "circuit_breaker_reset",
+            json!({"reason":"escalated_tool_finished",
+            "conversation_id":session,"step":step}),
+        );
+    }
+    Ok(())
+}
+
 fn normalize(payload: &Value) -> Value {
     let mut value = payload.clone();
     if config::mode() != config::Mode::Pi
         && value["authorization"].is_null()
         && value["transcriptPath"].is_string()
     {
-        value["authorization"] = crate::authorization::from_agy_hook(payload);
+        let (auth, diagnostics) = crate::authorization::from_agy_hook_with_diagnostics(payload);
+        value["authorization"] = auth;
+        value["authorization_collection"] = diagnostics;
     }
     if config::mode() == config::Mode::Pi {
         value["original_tool"] = payload["toolCall"].clone();
@@ -359,6 +461,39 @@ fn normalize(payload: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn breaker_resets_entire_window_only_on_new_user_or_matching_completion() {
+        let root = tempfile::tempdir().unwrap();
+        let mut b = Breaker::open(root.path(), "session").unwrap();
+        assert!(!b.observe_user("user-1").unwrap());
+        for _ in 0..3 {
+            b.record("deny").unwrap();
+        }
+        assert!(!b.observe_user("user-1").unwrap());
+        assert!(b.tripped().is_some());
+        b.escalate("request-1", Some(10)).unwrap();
+        assert!(!b.human_result("other", true).unwrap());
+        assert!(!b.human_result("request-1", false).unwrap());
+        assert!(b.completed_step(11).unwrap().is_none());
+        assert!(b.tripped().is_some());
+        assert!(b.human_result("request-1", true).unwrap());
+        b.record("deny").unwrap();
+        assert!(b.tripped().is_none(), "old rolling window must be gone");
+        assert!(b.observe_user("user-2").unwrap());
+        for _ in 0..3 {
+            b.record("deny").unwrap();
+        }
+        b.escalate("request-2", Some(20)).unwrap();
+        drop(b);
+        let mut b = Breaker::open(root.path(), "session").unwrap();
+        assert_eq!(b.completed_step(20).unwrap().as_deref(), Some("request-2"));
+        assert!(
+            b.completed_step(20).unwrap().is_none(),
+            "callback is consumed once"
+        );
+        b.record("deny").unwrap();
+        assert!(b.tripped().is_none());
+    }
     #[tokio::test]
     async fn cancelled_breaker_wait_does_not_retain_the_lock() {
         let root = tempfile::tempdir().unwrap();

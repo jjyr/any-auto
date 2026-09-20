@@ -108,8 +108,15 @@ chronological records (JSONL with --json) and cannot be combined with grouping.
 `--decision` accepts allow/deny/ask/force_ask. `--limit` defaults to 20.
 `show` outputs correlated events including backend results and Pi human decisions.
 A human confirmation is distinct from the model's ask/force_ask result.
-A positive Pi confirmation also clears that conversation's consecutive-denial
-state so later actions can return to automatic review.
+A positive Pi confirmation clears the entire denial window for its pending
+approval ID. A new validated user message also starts a fresh review window;
+retries and agent/tool messages do not. For agy, a `PostToolUse` callback matching
+the escalated conversation and step ends the pause. This callback records tool
+completion, not a claim of human approval, and does not grant permission to future
+actions. All subsequent actions are evaluated normally. Old or unrelated callbacks
+cannot clear the window. Reset reasons are recorded as `circuit_breaker_reset`.
+Existing installations must refresh hooks with `any-auto install --agents agy-cli`
+(or the corresponding installed agents) to register `post-tool`.
 
 Daily UTC `approvals-YYYY-MM-DD.jsonl` files are shared across agents/instances and
 use cross-process file locks. New events use schema 3 and generic
@@ -117,6 +124,54 @@ backend_request/response/error names. No legacy-schema conversion is provided.
 Logs work without a running daemon and may contain tool arguments and assessment
 text. They do not log authentication headers or complete process environments.
 File permissions are 0600. There is no automatic retention cleanup.
+
+Jev detail records include `approval_checks` (selected class, acceptance probability,
+threshold and pass/fail) and `failed_checks`. For selected low risk, the acceptance
+probabilities are `P(low)` for risk and
+`P(high) + P(medium)` for authorization. For selected medium risk, they are
+`P(low) + P(medium)` for risk and `P(high)` for authorization, with authorization
+required to be high. Policy must be permitted in both cases. The API's
+`confidence` statistic is diagnostic only.
+The one-line reason also lists failed checks. Class requirements still apply even
+when a probability meets the threshold.
+
+`reviewer_input.authorization_diagnostics` records received and normalized message
+IDs, sources, counts and UTF-8 byte lengths, without message text. It reports the
+16 KiB normalization limit and whether evidence changed or was already marked
+truncated upstream. These are lengths at the reviewer boundary, not the size of
+an original transcript. For agy transcript collection, `hook_input` also includes
+`authorization_collection`: collection limits, bytes read, selected counts and
+any reached limit. A transcript read stopped at the size cap reports a lower bound;
+a five-message window limit does not mean the entire transcript was inspected.
+`jev_rubric` stores the effective questions (including custom instructions), and
+all events include the binary's package version in `build_version`.
+
+To capture the actual Jev request for a reproduction, enable `diagnostic_snapshot`
+in `~/.config/any-auto/config.toml` (or the XDG config location). It defaults to
+false, follows common/per-agent approver inheritance, and is supported by Jev.
+Use `any-auto config --edit` to edit it and `any-auto config` to inspect the effective
+value and source. Changes apply on the next review without restarting the daemon.
+
+```toml
+[approver]
+provider = "jev"
+diagnostic_snapshot = true
+
+# Optional per-agent override:
+[agents.pi.approver]
+diagnostic_snapshot = false
+```
+
+Inspect the captured request with `any-auto logs show APPROVAL_ID`. Set the option
+back to false when finished. There is no environment-variable override for this
+setting.
+
+The opt-in `jev_diagnostic_request` event contains the actual `model`, `state` and
+`questions` body, including user authorization text and inspected script content.
+`jev_diagnostic_response` contains the validated model and structured answers.
+Transport credentials and authentication headers are not included. Secrets present
+in the request body itself are preserved, so treat these snapshots as sensitive.
+They use the same 0600 audit files and retention policy as other events. Disable the setting when finished.
 
 ## Stats: usage and latency aggregates
 

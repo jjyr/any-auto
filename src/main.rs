@@ -23,6 +23,8 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
+    /// Record completion of an agy tool step (internal PostToolUse protocol).
+    PostTool,
     /// Record a Pi user confirmation (internal extension protocol).
     HumanResult,
     /// Check agent detection and local reviewer readiness without model requests.
@@ -127,7 +129,7 @@ async fn main() -> Result<()> {
             .unwrap_or_else(|| "default".into()),
     )?;
     config::set_mode(cli.mode.unwrap_or_else(|| {
-        if matches!(cli.command, Some(Commands::Hook)) {
+        if matches!(cli.command, Some(Commands::Hook | Commands::PostTool)) {
             config::Mode::for_hook()
         } else {
             config::Mode::Cli
@@ -155,7 +157,13 @@ async fn main() -> Result<()> {
             if value["allowed"] == true
                 && let Some(session) = value["conversation_id"].as_str().filter(|s| !s.is_empty())
             {
-                pipeline::Breaker::open(&config::state_dir(), session)?.record("allow")?;
+                if pipeline::Breaker::open(&config::state_dir(), session)?.human_result(id, true)? {
+                    audit::record(
+                        id,
+                        "circuit_breaker_reset",
+                        json!({"reason":"human_approval", "conversation_id":session}),
+                    );
+                }
             }
             audit::record(id, "human_result", value.clone());
         }
@@ -169,6 +177,20 @@ async fn main() -> Result<()> {
             cli.instance.as_deref(),
             (!no_group).then_some(group_by),
         )?,
+        Commands::PostTool => {
+            let mut bytes = Vec::new();
+            std::io::stdin()
+                .take(1024 * 1024 + 1)
+                .read_to_end(&mut bytes)?;
+            anyhow::ensure!(bytes.len() <= 1024 * 1024, "PostToolUse input too large");
+            let payload: Value = serde_json::from_slice(&bytes)?;
+            tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                pipeline::post_tool(&payload),
+            )
+            .await??;
+            println!("{{}}");
+        }
         Commands::Hook => {
             let mut bytes = Vec::new();
             let parsed = std::io::stdin()

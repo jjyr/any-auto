@@ -61,6 +61,33 @@ impl Harness {
         );
         serde_json::from_slice(&out.stdout).unwrap()
     }
+    fn submit(&self, args: &[&str], payload: &Value) -> Value {
+        let mut child = self
+            .command()
+            .args(args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload.to_string().as_bytes())
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        if out.stdout.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&out.stdout).unwrap()
+        }
+    }
     fn output(&self, args: &[&str]) -> String {
         let out = self.command().args(args).output().unwrap();
         assert!(
@@ -618,7 +645,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
             .contains("Circuit breaker")
     );
     assert_eq!(worker.join().unwrap().len(), 3);
-    assert!(h.logs().contains("jev-decision-v2"));
+    assert!(h.logs().contains("jev-decision-v3"));
 }
 
 #[test]
@@ -777,4 +804,153 @@ fn workspace_listing_is_reviewed_by_jev_with_user_context() {
         assert_eq!(body["state"]["authorization"]["availability"], "available");
     }
     assert!(h.logs().contains("backend_request"));
+}
+
+#[test]
+fn diagnostic_snapshot_is_request_scoped_and_excludes_transport_credentials() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok(), ok(), ok()]);
+    h.configure(&url, "");
+    for enabled in [false, true, false] {
+        h.configure(&url, &format!("diagnostic_snapshot={enabled}\n"));
+        assert_eq!(
+            h.hook(&request(), "snapshot-secret-key")["decision"],
+            "allow"
+        );
+    }
+    let requests = worker.join().unwrap();
+    let logs = h.logs();
+    assert!(!logs.contains("snapshot-secret-key"));
+    let events: Vec<Value> = logs
+        .lines()
+        .filter(|s| !s.is_empty())
+        .map(|s| serde_json::from_str(s).unwrap())
+        .collect();
+    let snapshots: Vec<_> = events
+        .iter()
+        .filter(|e| e["event"] == "jev_diagnostic_request")
+        .collect();
+    assert_eq!(snapshots.len(), 1);
+    assert_eq!(snapshots[0]["data"]["body"], requests[1].1);
+    assert_eq!(
+        events
+            .iter()
+            .filter(|e| e["event"] == "jev_diagnostic_response")
+            .count(),
+        1
+    );
+    for event in &events {
+        if event["event"] != "jev_diagnostic_request" {
+            assert!(!event.to_string().contains("private-user-context"));
+            assert!(!event.to_string().contains("private-prior-context"));
+        }
+    }
+    let input = events
+        .iter()
+        .find(|e| e["event"] == "reviewer_input")
+        .unwrap();
+    assert_eq!(
+        input["data"]["authorization_diagnostics"]["normalized"]["message_count"],
+        2
+    );
+    assert_eq!(
+        input["data"]["authorization_diagnostics"]["normalized"]["messages"][0]["id"],
+        "user-1"
+    );
+    assert_eq!(
+        events.iter().find(|e| e["event"] == "jev_rubric").unwrap()["data"]["questions"],
+        requests[0].1["questions"]
+    );
+    use std::os::unix::fs::PermissionsExt;
+    for file in fs::read_dir(h.root.path().join("logs")).unwrap().flatten() {
+        if file.path().extension().is_some_and(|e| e == "jsonl") {
+            assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+}
+
+#[test]
+fn fresh_user_message_reopens_review_without_automatically_allowing() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok(), ok(), ok(), ok(), ok()]);
+    h.configure(&url, "probability_threshold=0.95\n");
+    let mut req = request();
+    for _ in 0..3 {
+        assert_eq!(h.hook(&req, "key")["decision"], "deny");
+    }
+    assert_eq!(h.hook(&req, "key")["decision"], "force_ask");
+    // Changing a tool or retrying does not signal a new user turn.
+    req["toolCall"]["args"]["content"] = json!("retry");
+    assert_eq!(h.hook(&req, "key")["decision"], "force_ask");
+    req["authorization"]["latest_user_message"]["id"] = json!("user-2");
+    req["authorization"]["latest_user_message"]["text"] = json!("Yes, create the file locally.");
+    assert_eq!(h.hook(&req, "key")["decision"], "deny");
+    h.configure(&url, "");
+    assert_eq!(h.hook(&req, "key")["decision"], "allow");
+    assert_eq!(worker.join().unwrap().len(), 5);
+    assert!(h.logs().contains("new_user_message"));
+}
+
+#[test]
+fn pi_confirmation_clears_the_entire_denial_window() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok(), ok(), ok(), ok(), ok()]);
+    h.configure(&url, "probability_threshold=0.95\n");
+    for _ in 0..3 {
+        assert_eq!(h.hook(&request(), "key")["decision"], "deny");
+    }
+    let ask = h.hook(&request(), "key");
+    assert_eq!(ask["decision"], "force_ask");
+    h.submit(
+        &["human-result", "--agent", "pi"],
+        &json!({"request_id":ask["request_id"],
+        "conversation_id":"jev-session", "allowed":true}),
+    );
+    for _ in 0..2 {
+        assert_eq!(h.hook(&request(), "key")["decision"], "deny");
+    }
+    assert_eq!(worker.join().unwrap().len(), 5);
+    assert!(h.logs().contains("human_approval"));
+}
+
+#[test]
+fn agy_completed_escalation_resumes_automatic_review() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok(), ok(), ok(), ok(), ok()]);
+    h.configure(&url, "probability_threshold=0.95\n");
+    let mut req = request();
+    for step in 1..=3 {
+        req["stepIdx"] = json!(step);
+        assert_eq!(
+            h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
+            "deny"
+        );
+    }
+    req["stepIdx"] = json!(4);
+    assert_eq!(
+        h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
+        "force_ask"
+    );
+    // An unrelated completion cannot release the pending escalation.
+    h.submit(
+        &["post-tool", "--agent", "agy-cli"],
+        &json!({"conversationId":"jev-session","stepIdx":3}),
+    );
+    assert_eq!(
+        h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
+        "force_ask"
+    );
+    h.submit(
+        &["post-tool", "--agent", "agy-cli"],
+        &json!({"conversationId":"jev-session","stepIdx":4}),
+    );
+    for step in 5..=6 {
+        req["stepIdx"] = json!(step);
+        assert_eq!(
+            h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
+            "deny"
+        );
+    }
+    assert_eq!(worker.join().unwrap().len(), 5);
+    assert!(h.logs().contains("escalated_tool_finished"));
 }
