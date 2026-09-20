@@ -1,6 +1,6 @@
 use crate::{audit, config, install, stats};
 use anyhow::Result;
-use dialoguer::{Confirm, Input, Select};
+use dialoguer::{Confirm, Input, Password, Select};
 use std::io::IsTerminal;
 
 pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
@@ -16,13 +16,22 @@ pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.into()),
     };
-    let mut doc: toml_edit::DocumentMut = text.parse()?;
+    let mut doc: toml_edit::DocumentMut = text
+        .parse()
+        .map_err(|_| anyhow::anyhow!("Invalid configuration TOML"))?;
     for agent in agents {
         println!(
             "Configure {} (environment overrides still take precedence)",
             agent.agent()
         );
-        let providers = ["Keep existing/default", "pi", "cli", "openai", "agentapi"];
+        let providers = [
+            "Keep existing/default",
+            "pi",
+            "cli",
+            "openai",
+            "agentapi",
+            "jev",
+        ];
         let Some(choice) = Select::new()
             .with_prompt("Approver backend")
             .items(&providers)
@@ -68,17 +77,38 @@ pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
         // Explicit empty overrides prevent inheriting common model/effort.
         settings["model"] = toml_edit::value(model);
         settings["effort"] = toml_edit::value(if effort == "default" { "" } else { effort });
-        if provider == "openai" {
+        if matches!(provider, "openai" | "jev") {
             let url: String = Input::new()
-                .with_prompt("Responses API base URL")
-                .default("https://api.openai.com/v1".into())
+                .with_prompt("API base URL (including /v1)")
+                .default(
+                    if provider == "jev" {
+                        "https://api.typesafe.ai/v1"
+                    } else {
+                        "https://api.openai.com/v1"
+                    }
+                    .into(),
+                )
                 .interact_text()?;
-            let key: String = Input::new()
-                .with_prompt("API key environment variable name (not the secret)")
-                .default("OPENAI_API_KEY".into())
-                .interact_text()?;
+            let key = Password::new().with_prompt("API key").interact()?;
             settings["base_url"] = toml_edit::value(url);
-            settings["api_key_env"] = toml_edit::value(key);
+            settings["api_key"] = toml_edit::value(key);
+        }
+        if provider == "jev" {
+            let threshold: f64 = Input::new()
+                .with_prompt("Probability threshold (0 to 1)")
+                .default(0.9)
+                .validate_with(|v: &f64| {
+                    if v.is_finite() && (0.0..=1.0).contains(v) {
+                        Ok(())
+                    } else {
+                        Err("Expected a finite number from 0 to 1")
+                    }
+                })
+                .interact_text()?;
+            settings["probability_threshold"] = toml_edit::value(threshold);
+            println!(
+                "Optional custom risk/authorization/policy instructions can be edited with any-auto config --edit."
+            );
         }
         if doc.get("agents").is_none() {
             doc["agents"] = toml_edit::Item::Table(toml_edit::Table::new());
@@ -97,11 +127,11 @@ pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
     println!(
         "Proposed configuration: {}\n{}",
         config::config_path().display(),
-        text
+        redacted_preview(&text)?
     );
     Ok(Some(text))
 }
-pub fn run() -> Result<()> {
+pub async fn run() -> Result<()> {
     anyhow::ensure!(
         std::io::stdin().is_terminal() && std::io::stderr().is_terminal(),
         "TUI requires a terminal. Use --help or a subcommand."
@@ -115,6 +145,7 @@ pub fn run() -> Result<()> {
                 "Configure approvers",
                 "Logs",
                 "Statistics",
+                "Uninstall integrations",
                 "Exit",
             ])
             .default(0)
@@ -135,6 +166,7 @@ pub fn run() -> Result<()> {
                 false,
             ),
             4 => stats::print(None, None, None, Some(audit::Group::Agent)),
+            5 => crate::uninstall::run(Default::default()).await,
             _ => return Ok(()),
         };
         if let Err(e) = result {
@@ -153,4 +185,22 @@ fn configure() -> Result<()> {
         config::save_text(&text)?;
     }
     Ok(())
+}
+
+fn redacted_preview(text: &str) -> Result<String> {
+    fn redact(value: &mut toml::Value) {
+        if let Some(table) = value.as_table_mut() {
+            for (key, value) in table {
+                if key == "api_key" {
+                    *value = toml::Value::String("[REDACTED]".into());
+                } else {
+                    redact(value);
+                }
+            }
+        }
+    }
+    let mut value: toml::Value =
+        toml::from_str(text).map_err(|_| anyhow::anyhow!("Invalid configuration TOML"))?;
+    redact(&mut value);
+    Ok(toml::to_string_pretty(&value)?)
 }

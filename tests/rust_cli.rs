@@ -402,6 +402,7 @@ esac
             .unwrap();
         let mut v: Value = serde_json::from_str(&payload("bash build.sh")).unwrap();
         v["workspacePaths"] = json!([s.dir.path()]);
+        v["toolCall"]["args"]["Cwd"] = json!(s.dir.path());
         child
             .stdin
             .take()

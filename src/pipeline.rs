@@ -196,7 +196,11 @@ pub async fn evaluate(payload: &Value) -> Value {
         .unwrap_or_else(audit::request_id);
     let payload = &normalize(payload);
     let started = std::time::Instant::now();
-    audit::record(&id, "hook_input", json!({"input":payload}));
+    audit::record(
+        &id,
+        "hook_input",
+        json!({"input":audit::without_authorization(payload.clone())}),
+    );
     let mut stage = "reviewer";
     let mut reviewer = Value::Null;
     // Includes waiting for this user's circuit breaker lock and daemon startup/review.
@@ -322,6 +326,12 @@ async fn evaluate_inner(
 
 fn normalize(payload: &Value) -> Value {
     let mut value = payload.clone();
+    if config::mode() != config::Mode::Pi
+        && value["authorization"].is_null()
+        && value["transcriptPath"].is_string()
+    {
+        value["authorization"] = crate::authorization::from_agy_hook(payload);
+    }
     if config::mode() == config::Mode::Pi {
         value["original_tool"] = payload["toolCall"].clone();
         let name = payload["toolCall"]["name"].as_str().unwrap_or("");

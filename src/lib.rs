@@ -13,3 +13,9 @@ pub mod stats;
 pub mod ui;
 pub mod upgrade;
 pub(crate) mod usage;
+
+mod review_input;
+
+pub mod uninstall;
+
+mod authorization;

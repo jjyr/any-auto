@@ -222,7 +222,7 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
     use std::{io::Read, net::TcpListener};
     let h = Agent::new();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    h.config(&format!("[agents.pi.approver]\nprovider='openai'\nmodel='fixture-model'\neffort='low'\nbase_url='http://{}/v1'\napi_key_env='APPROVER_FIXTURE_KEY'\n", server.local_addr().unwrap()));
+    h.config(&format!("[agents.pi.approver]\nprovider='openai'\nmodel='fixture-model'\neffort='low'\nbase_url='http://{}/v1'\napi_key='fixture-secret'\n", server.local_addr().unwrap()));
     let worker = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for i in 1..=2 {
@@ -263,13 +263,12 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
     for _ in 0..2 {
         let mut hook = h
             .cmd()
-            .env("APPROVER_FIXTURE_KEY", "fixture-secret")
             .args(["hook", "--agent", "pi"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        hook.stdin.take().unwrap().write_all(br#"{"conversationId":"api","toolCall":{"name":"write","args":{}},"workspacePaths":[]}"#).unwrap();
+        hook.stdin.take().unwrap().write_all(br#"{"conversationId":"api","toolCall":{"name":"write","args":{}},"workspacePaths":[],"authorization":{"availability":"available","latest_user_message":{"id":"u1","role":"user","text":"Create the file","source":"current_branch"},"relevant_prior_messages":[]}}"#).unwrap();
         let out = hook.wait_with_output().unwrap();
         let result: Value = serde_json::from_slice(&out.stdout).unwrap();
         assert_eq!(result["decision"], "allow", "{result}");
@@ -279,6 +278,12 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
     assert_eq!(requests[1]["previous_response_id"], "resp_1");
     assert_eq!(requests[0]["reasoning"]["effort"], "low");
     assert_eq!(requests[0]["tools"], json!([]));
+    let input: Value = serde_json::from_str(requests[0]["input"].as_str().unwrap()).unwrap();
+    assert_eq!(
+        input["authorization"]["latest_user_message"]["text"],
+        "Create the file"
+    );
+    assert_eq!(input["completeness"]["authorization"], "available");
     let stats = h.run(&["stats", "--no-group"]);
     assert!(stats.contains("40"), "{stats}");
     assert!(

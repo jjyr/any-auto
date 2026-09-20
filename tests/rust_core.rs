@@ -116,7 +116,7 @@ fn tolerant_review_fails_closed() {
         parse("prefix {\"decision\":\" ALLOW \"} suffix").risk_level,
         "low"
     );
-    assert_eq!(parse("{\"outcome\":\"force_ask\"}").outcome, "force_ask");
+    assert_eq!(parse("{\"outcome\":\"force_ask\"}").outcome, "deny");
 }
 #[test]
 fn breaker_persistence_and_window() {
@@ -230,5 +230,18 @@ fn shell_syntax_regressions() {
             ["file(/tmp/file)"]
         );
         assert!(parser::overrides(tool, &json!({})).is_empty());
+    }
+}
+
+#[test]
+fn backend_decisions_are_binary_and_cannot_request_human_override() {
+    for outcome in ["ask", "force_ask", "unknown"] {
+        for field in ["outcome", "decision"] {
+            assert_eq!(parse(&json!({field:outcome}).to_string()).outcome, "deny");
+        }
+        assert_eq!(
+            parse(&json!({"outcome":outcome,"decision":"allow"}).to_string()).outcome,
+            "deny"
+        );
     }
 }

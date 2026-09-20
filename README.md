@@ -8,11 +8,11 @@ Auto-approve for Antigravity (agy) and Pi, powered by the AI backend of your cho
 ```text
  Coding agents           Auto-approve           Reviewer backends
 
-+-------------------+    +--------------+    +-----------------------+
-| agy CLI / Desktop |--->|              |--->| CLI: agy or Pi        |
-|                   |    | any-auto     |    |                       |
-| Pi                |--->|              |--->| API: OpenAI Responses |
-+-------------------+    +--------------+    +-----------------------+
++-------------------+    +--------------+    +---------------------------+
+| Antigravity       |--->|              |--->| Jev: System One           |
+|                   |    | any-auto     |--->| CLI: agy or Pi            |
+| Pi                |--->|              |--->| API: OpenAI Responses     |
++-------------------+    +--------------+    +---------------------------+
 ```
 
 Automatically review tool requests and approve them when appropriate, so your
@@ -28,7 +28,7 @@ read-only tools and blocked commands; other requests go to an AI reviewer that
 assesses risk and user authorization.
 
 ```text
-Antigravity CLI / Desktop / Pi
+Antigravity / Pi
            |
      Approval hook
            |
@@ -45,9 +45,10 @@ Antigravity CLI / Desktop / Pi
      Error or timeout -----------------> Deny
 ```
 
-The daemon maintains a separate reviewer session for each user conversation, allowing the model service
+Conversational backends maintain a separate reviewer session for each user conversation, allowing the model service
 to reuse KV/prompt caches for shared context. Cache hits can reduce repeated
 processing and input-token costs, depending on the provider's caching and pricing.
+
 Idle sessions leave memory after five minutes; Pi RPC children are terminated and reaped.
 The next request restores persisted state. Each Pi session owns its own RPC process.
 Repeated AI-review denials trip the circuit breaker, requiring user review on
@@ -130,6 +131,33 @@ effort = "low"
 `config` shows all agents and setting sources. Legacy configuration is not read.
 Logs/stats and sessions start fresh; see [configuration and directory details](docs/configuration.md#overview-tui-and-directories).
 
+### Jev
+
+Switching to Jev can substantially reduce auto-approval latency and token usage
+compared with conversational reviewers. Actual savings depend on your previous
+backend and the requests being reviewed.
+
+Add to `~/.config/any-auto/config.toml` (open with `any-auto config --edit`):
+
+```toml
+[approver]
+provider = "jev"
+base_url = "https://api.typesafe.ai/v1"
+api_key = "your-api-key"
+model = "jev-1.13.0"
+probability_threshold = 0.9
+```
+
+To configure only one agent, replace `[approver]` above with its table name:
+
+- Pi: `[agents.pi.approver]`
+- Antigravity CLI (agy): `[agents.agy-cli.approver]`
+- Antigravity Desktop: `[agents.agy-desktop.approver]`
+
+Keep the same fields under the selected table. To configure both Antigravity CLI
+and Desktop, add both tables with the desired settings. See [Jev setup](docs/jev.md)
+for configuration overrides and custom instructions.
+
 ## Commands
 
 For all commands and options, see the [command reference](docs/commands.md). For more details, see the [multi-agent architecture](docs/architecture.md) and [sidecar documentation](docs/sidecars.md).
@@ -171,29 +199,22 @@ agent: pi
 ### Approval statistics
 
 Run `any-auto stats` for tables grouped by agent showing input/output tokens and approval time
-(totals and averages) over the last 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
+(totals and averages) over the last 5 minutes, 24 hours, 7 days, and 30 days. Use `--agent pi`, `--provider pi`, or `--group-by model` to select a view;
 `--no-group` shows only totals. Statistics read daily UTC audit logs directly;
 there is no database. Unknown token usage displays `N/A`. The usage tables count only completed model
 reviews; see [statistics details](docs/commands.md#stats-usage-and-latency-aggregates).
 
-Example output (`any-auto stats`, rendered by the CLI from the same illustrative records):
+Example output from local usage (`any-auto stats`, captured on 2026-09-20):
 
 ```text
 agent: agy-cli
 ┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
 │ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
 ├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
-│ Last 24 hours │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 7 days   │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-│ Last 30 days  │         1 │        2,700 │           320 │       1.0s │     2,700 │        320 │     1.0s │
-└───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
-agent: pi
-┌───────────────┬───────────┬──────────────┬───────────────┬────────────┬───────────┬────────────┬──────────┐
-│ Period        │ Approvals │ Input Tokens │ Output Tokens │ Total Time │ Avg Input │ Avg Output │ Avg Time │
-├───────────────┼───────────┼──────────────┼───────────────┼────────────┼───────────┼────────────┼──────────┤
-│ Last 24 hours │         0 │            0 │             0 │       0.0s │         — │          — │        — │
-│ Last 7 days   │         1 │        1,800 │           240 │       1.4s │     1,800 │        240 │     1.4s │
-│ Last 30 days  │         2 │        3,900 │           500 │       2.6s │     1,950 │        250 │     1.3s │
+│ Last 5 min    │         3 │        3,542 │           423 │       2.7s │     1,181 │        141 │     0.9s │
+│ Last 24 hours │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
+│ Last 7 days   │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
+│ Last 30 days  │        15 │      160,789 │         5,075 │     2m 19s │    10,719 │        338 │     9.2s │
 └───────────────┴───────────┴──────────────┴───────────────┴────────────┴───────────┴────────────┴──────────┘
 ```
 

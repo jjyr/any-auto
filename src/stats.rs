@@ -26,6 +26,13 @@ struct Totals {
     unknown_tokens: bool,
     unknown_time: bool,
 }
+const WINDOWS: [(&str, i64); 4] = [
+    ("Last 5 min", 300),
+    ("Last 24 hours", 86_400),
+    ("Last 7 days", 7 * 86_400),
+    ("Last 30 days", 30 * 86_400),
+];
+
 struct Collector {
     now: DateTime<Utc>,
     mode: Option<config::Mode>,
@@ -122,14 +129,14 @@ impl Collector {
             _ => unreachable!(),
         }
     }
-    fn totals(self) -> [Totals; 3] {
+    fn totals(self) -> [Totals; 4] {
         let mut totals = std::array::from_fn(|_| Totals::default());
         for request in self.requests.values() {
             let Some((completed, duration)) = request.completed else {
                 continue;
             };
-            for (days, total) in [1, 7, 30].into_iter().zip(&mut totals) {
-                if completed < self.now - Duration::days(days) {
+            for ((_, seconds), total) in WINDOWS.into_iter().zip(&mut totals) {
+                if completed < self.now - Duration::seconds(seconds) {
                     continue;
                 }
                 total.approvals += 1;
@@ -147,7 +154,7 @@ impl Collector {
     }
 }
 #[cfg(test)]
-fn collect(dir: &Path, now: DateTime<Utc>, mode: Option<config::Mode>) -> Result<[Totals; 3]> {
+fn collect(dir: &Path, now: DateTime<Utc>, mode: Option<config::Mode>) -> Result<[Totals; 4]> {
     let first = (now - Duration::days(31)).date_naive();
     let last = now.date_naive();
     let paths = audit::paths(dir)?
@@ -189,7 +196,7 @@ fn time(ms: u128) -> String {
         )
     }
 }
-fn table(totals: &[Totals; 3]) -> String {
+fn table(totals: &[Totals; 4]) -> String {
     let mut rows = vec![
         vec![
             "Period",
@@ -205,10 +212,7 @@ fn table(totals: &[Totals; 3]) -> String {
         .map(str::to_owned)
         .collect::<Vec<_>>(),
     ];
-    for (period, total) in ["Last 24 hours", "Last 7 days", "Last 30 days"]
-        .into_iter()
-        .zip(totals)
-    {
+    for ((period, _), total) in WINDOWS.into_iter().zip(totals) {
         let tokens = |value| {
             if total.unknown_tokens {
                 "N/A".into()
@@ -426,11 +430,12 @@ mod tests {
             finish(&mut c, stage, "cli", now(), stage, 10000);
         }
         let totals = c.totals();
-        for (actual, expected) in
-            totals
-                .iter()
-                .zip([(2, 40, 9, 3000), (4, 110, 23, 10000), (6, 220, 45, 21000)])
-        {
+        for (actual, expected) in totals.iter().zip([
+            (1, 20, 5, 1000),
+            (2, 40, 9, 3000),
+            (4, 110, 23, 10000),
+            (6, 220, 45, 21000),
+        ]) {
             assert_eq!(
                 (
                     actual.approvals,
@@ -446,12 +451,36 @@ mod tests {
         assert!(output.contains("1.5s"));
         assert!(output.contains("Last 30 days"));
         assert!(!output.contains("365"));
-        assert_eq!(output.lines().count(), 7);
+        assert_eq!(output.lines().count(), 8);
+        assert!(output.lines().nth(3).unwrap().contains("Last 5 min"));
         assert!(
             output
                 .lines()
                 .all(|l| l.chars().count() == output.lines().next().unwrap().chars().count())
         );
+    }
+    #[test]
+    fn five_minute_window_uses_completion_time_and_includes_exact_boundary() {
+        let mut c = collector();
+        for (id, completed) in [
+            ("inside", now() - Duration::seconds(299)),
+            ("boundary", now() - Duration::seconds(300)),
+            (
+                "outside",
+                now() - Duration::seconds(300) - Duration::milliseconds(1),
+            ),
+        ] {
+            call(&mut c, id, "cli", now() - Duration::minutes(6), 100, 10);
+            finish(&mut c, id, "cli", completed, "reviewer", 1000);
+        }
+        let totals = c.totals();
+        assert_eq!(totals[0].approvals, 2);
+        assert_eq!(
+            (totals[0].input, totals[0].output, totals[0].duration_ms),
+            (200, 20, 2000)
+        );
+        assert!(!totals[0].unknown_tokens);
+        assert_eq!(totals[1].approvals, 3);
     }
     #[test]
     fn unknown_usage_and_failed_retry_do_not_become_zero() {
