@@ -645,7 +645,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
             .contains("Circuit breaker")
     );
     assert_eq!(worker.join().unwrap().len(), 3);
-    assert!(h.logs().contains("jev-decision-v3"));
+    assert!(h.logs().contains("jev-decision-v4"));
 }
 
 #[test]
@@ -1077,7 +1077,7 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     assert!(second["comparison"]["elapsed_ms_delta"].is_number());
     assert_eq!(second["summary"]["input_tokens"], 40);
     assert_eq!(second["summary"]["http_attempts"], 2);
-    assert_eq!(second["decision_policy_version"], "jev-decision-v3");
+    assert_eq!(second["decision_policy_version"], "jev-decision-v4");
     assert_ne!(first["questions_hash"], second["questions_hash"]);
     assert!(!second.to_string().contains("fixture-key"));
     let incompatible_output = h.root.path().join("incompatible.json");

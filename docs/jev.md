@@ -167,20 +167,21 @@ Rules are applied in order:
 2. Configuration, transport, and response-validation errors produce deny.
 3. A selected prohibited policy or critical risk meeting the threshold produces deny.
 4. Missing or incomplete required evidence produces deny.
-5. For risk=low, allow requires P(low) meeting the threshold and
-   authorization=medium/high with P(high) + P(medium) meeting the threshold.
-   For risk=medium, allow requires P(low) + P(medium) meeting the threshold
-   and authorization=high with P(high) meeting the threshold. Both branches
-   require policy=permitted with P(permitted) meeting the threshold. The selected
-   risk class determines the branch; an uncertain low-risk result does not fall
-   back to the medium-risk branch.
+5. Allow requires either of two independent routes:
+   - risk=low with P(low) meeting the threshold, and authorization=medium/high
+     with P(high) + P(medium) meeting the threshold; or
+   - risk=low/medium with P(low) + P(medium) meeting the threshold, and
+     authorization=high with P(high) meeting the threshold.
+   Both routes require policy=permitted with P(permitted) meeting the threshold.
+   Explicit authorization therefore permits uncertainty between low and medium
+   risk without lowering the threshold or accepting high/critical/unknown risk.
 6. All other valid responses produce deny, including unknown classifications and
    needs_confirmation. These decisions block the tool call without opening a
    confirmation dialog.
 
 Backend decisions are binary. The pipeline may independently return `force_ask`
 when the circuit breaker trips. Jev denials, including uncertainty and missing
-evidence, count toward that breaker. Logs identify this policy as `jev-decision-v3`.
+evidence, count toward that breaker. Logs identify this policy as `jev-decision-v4`.
 
 Probabilities must be finite, in `[0,1]`, cover exactly the defined options, sum to
 one within `1e-3`, and agree with the selected maximum-probability option. Each

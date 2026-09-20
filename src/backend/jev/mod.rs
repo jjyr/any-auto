@@ -12,7 +12,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Instant};
 
 pub(crate) const RUBRIC_VERSION: &str = "jev-review-v4";
-pub(crate) const DECISION_POLICY_VERSION: &str = "jev-decision-v3";
+pub(crate) const DECISION_POLICY_VERSION: &str = "jev-decision-v4";
 
 const RISK: &[&str] = &["low", "medium", "high", "critical", "unknown"];
 const AUTH: &[&str] = &["high", "medium", "low", "unknown"];
@@ -102,9 +102,18 @@ fn parse(value: Value) -> Result<Response> {
     Ok(response)
 }
 fn approval_checks(a: &Answers, input: &ReviewInput, threshold: f64) -> Value {
-    // The selected risk class determines the authorization requirement. A weak
-    // low-risk judgment does not silently fall back to the medium-risk branch.
-    let medium_risk = a.risk.choice == "medium";
+    // Either route can authorize the action. Explicit authorization permits
+    // probability mass split across low and medium risk, regardless of which wins.
+    let low_risk_allowed = a.risk.choice == "low"
+        && a.risk.p("low") >= threshold
+        && matches!(a.authorization.choice.as_str(), "high" | "medium")
+        && a.authorization.p("high") + a.authorization.p("medium") >= threshold;
+    let explicit_allowed = matches!(a.risk.choice.as_str(), "low" | "medium")
+        && a.risk.p("low") + a.risk.p("medium") >= threshold
+        && a.authorization.choice == "high"
+        && a.authorization.p("high") >= threshold;
+    // Report the passing route; on denial retain the selected risk's diagnostics.
+    let medium_risk = !low_risk_allowed && (explicit_allowed || a.risk.choice == "medium");
     let risk_choices = if medium_risk {
         vec!["low", "medium"]
     } else {
@@ -468,10 +477,50 @@ mod tests {
                 "deny"
             );
         }
+    }
+    #[test]
+    fn split_low_medium_risk_allows_only_with_explicit_authorization() {
+        // Regression: the three live evaluations all chose low but split its mass.
+        for (low, medium) in [(0.61, 0.39), (0.52, 0.48), (0.60, 0.40)] {
+            let mut value = medium_risk_response();
+            value["answers"]["risk"] = choice(
+                "low",
+                json!({"low":low,"medium":medium,"high":0.0,"critical":0.0,"unknown":0.0}),
+            );
+            let assessment = decision(&parse(value.clone()).unwrap(), &input(), 0.85);
+            assert_eq!(assessment.outcome, "allow");
+            let metadata = assessment.reviewer.unwrap();
+            assert_eq!(metadata["failed_checks"], json!([]));
+            assert_eq!(
+                metadata["approval_checks"]["risk"]["accepted_choices"],
+                json!(["low", "medium"])
+            );
+            assert_eq!(
+                metadata["approval_checks"]["authorization"]["accepted_choices"],
+                json!(["high"])
+            );
+            for auth in [
+                choice(
+                    "high",
+                    json!({"high":0.84,"medium":0.16,"low":0.0,"unknown":0.0}),
+                ),
+                choice(
+                    "medium",
+                    json!({"high":0.4,"medium":0.6,"low":0.0,"unknown":0.0}),
+                ),
+            ] {
+                value["answers"]["authorization"] = auth;
+                assert_eq!(
+                    decision(&parse(value.clone()).unwrap(), &input(), 0.85).outcome,
+                    "deny"
+                );
+            }
+        }
+        // Explicit authorization cannot compensate for insufficient risk probability.
         let mut value = medium_risk_response();
         value["answers"]["risk"] = choice(
             "low",
-            json!({"low":0.6,"medium":0.4,"high":0.0,"critical":0.0,"unknown":0.0}),
+            json!({"low":0.60,"medium":0.24,"high":0.16,"critical":0.0,"unknown":0.0}),
         );
         assert_eq!(
             decision(&parse(value).unwrap(), &input(), 0.85).outcome,
