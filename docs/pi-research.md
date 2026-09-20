@@ -141,3 +141,17 @@ One `(agent, instance, conversation)` owns one child while cached. Generic sessi
 eviction releases backend resources; Pi owns child cleanup, while agy/agentapi simply
 release memory and retain their persisted conversation IDs. No `switch_session` RPC
 is required by the implementation. Disk state survives eviction and is loaded on demand.
+
+## User authorization context (2026-09-20)
+
+The extension now reads role=user `SessionMessageEntry` values from the active
+`getBranch()` path before each tool call. It forwards the latest user message,
+prior user messages, entry IDs, and completeness status through the hook and
+private daemon request to every backend. Message content may be a string or text
+and image blocks; images, missing history, and budget limits mark evidence
+incomplete rather than inventing authorization. Assistant and tool-result entries
+are excluded. Compaction and branch summaries are not treated as user messages.
+
+The entry and context types were checked against the installed Pi declarations
+and the official [session format](https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md).
+See [Jev context limits](jev.md#context-sent-for-review) for bounds and behavior.

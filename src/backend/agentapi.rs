@@ -1,4 +1,4 @@
-use super::{Backend, BackendFuture, conversation_id, process};
+use super::{BackendFuture, SessionTransport, conversation_id, process};
 use crate::config::ReviewerConfig;
 use anyhow::Context;
 use serde_json::Value;
@@ -6,7 +6,7 @@ use tokio::process::Command;
 
 pub struct AgentApiBackend;
 
-impl Backend for AgentApiBackend {
+impl SessionTransport for AgentApiBackend {
     fn create_session<'a>(&'a self, config: &'a ReviewerConfig, id: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
             let model = config

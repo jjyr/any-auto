@@ -21,6 +21,18 @@ legacy installation selectors are mutually exclusive; use `--agents` to select s
 Only bare `install` opens the TUI. Any arguments disable interaction.
 The wizard defaults to detected agents, permits pre-installing undetected agents,
 and asks before writing. Installation preserves existing approver settings and does not prompt for provider, model or effort. By default, both agy agents use agy CLI (`cli`) and Pi uses Pi RPC (`pi`). Use `any-auto config --edit` to customize approvers.
+The multi-select lists both agent detection and integration installation status.
+Up/Down moves, Space toggles, Enter continues, and Esc cancels. Detected agents
+are preselected; installed integrations are updated only if selected. Selecting
+none exits without changes, and unselected integrations are never removed.
+
+Before confirmation, the installation summary shows the selected actions and
+effective reviewer for each agent, distinguishing defaults, existing configuration,
+and environment overrides. It explains automatic tool review, preserved reviewer
+settings/credentials, and any development-command permission additions to existing
+agy CLI settings. Invalid reviewer configuration fails before installation writes.
+Completion messages list only the selected agents' reload/restart instructions.
+
 Noninteractive installation preserves existing approver settings. Non-terminal bare calls fail with usage guidance. Update refreshes installed Pi integration as well as enabled agy
 integrations and stops the shared daemon. All instances resume lazily on new requests. See [releasing](releasing.md) for distribution details.
 
@@ -77,6 +89,7 @@ any-auto logs                       # Groups by agent
 any-auto logs --no-group            # Merged time order
 any-auto logs --agent pi --limit 50
 any-auto logs --provider pi --decision deny
+any-auto logs --provider jev --decision ask
 any-auto logs --tool bash --conversation SESSION_ID
 any-auto logs --instance desktop-two
 any-auto logs --group-by agent
@@ -86,6 +99,7 @@ any-auto logs -f --agent pi
 any-auto logs show APPROVAL_ID
 ```
 
+`--provider` accepts pi, cli, openai, agentapi, and jev.
 `--group-by` accepts agent, provider, model, effort, session, instance. Model and
 effort in log summaries are requested settings; omitted settings are labeled
 default/unknown. Detailed backend events record resolved model/effort when known.
@@ -115,6 +129,7 @@ any-auto stats
 any-auto stats --no-group
 any-auto stats --agent pi --group-by provider
 any-auto stats --provider pi --group-by model
+any-auto stats --provider jev --group-by model
 any-auto stats --group-by effort
 any-auto stats --group-by instance
 ```
@@ -133,7 +148,8 @@ Pi takes get_session_stats deltas around each settled prompt, including retries
 and compaction without counting duplicated lifecycle events. Its input is
 input + cacheRead + cacheWrite. OpenAI input_tokens already includes
 cached input; cached/reasoning detail counters are not added again. agy cumulative
-counters are converted to deltas; agentapi usage is unknown. Any unknown usage
+counters are converted to deltas; agentapi usage is unknown. Jev reports per-request
+input_tokens/output_tokens through the same events; missing usage remains unknown. Any unknown usage
 makes that group's token totals/averages N/A, not zero. Unknown durations behave
 likewise. Empty windows have zero totals and no average. Failed-review costs
 remain in detailed logs but are excluded from these completed-review tables.
@@ -152,7 +168,9 @@ any-auto config --edit
 
 `hook` reads one JSON object (up to 1 MiB) from stdin and outputs one JSON decision.
 The common payload has toolCall.name, toolCall.args, workspacePaths, and optional
-conversationId. Pi additionally supplies builtin_tool and request_id. Requests
+conversationId. Pi additionally supplies builtin_tool, request_id, and bounded
+user-origin authorization context. Jev is stateless remotely but shares local
+routing and circuit breaker behavior; see [Jev setup](jev.md). Requests
 without conversation identity use temporary sessions. The deadline is 28 seconds.
 Pi normalizes bash command arguments and trusts read-only shortcuts only for
 reported built-in tools. Unknown tools are model-reviewed. `human-result` is an
@@ -178,11 +196,56 @@ any-auto doctor           # Read-only local detection; no model requests
 any-auto config           # Effective settings and sources for every agent
 ```
 
-Only the root invocation without arguments and bare `install` enter interactive mode.
+The root invocation without arguments, bare `install`, and bare `uninstall` enter interactive mode.
 Other subcommands produce terminal text/JSON or perform their explicit action.
 Non-terminal interactive invocations fail with actionable guidance.
 `doctor` separates agent detection, integration presence and local backend availability.
 It does not verify login, model access or Pi version compatibility.
 The terminal menu uses the same shared-daemon routing as CLI commands.
+Configure approvers includes Jev with model, API URL, API API key,
+and probability threshold fields, without an effort selector. Edit per-question
+instructions through `config --edit`; `config --json` includes effective values
+and their sources. doctor checks the selected Jev API key locally and sends
+no API requests. Installation preserves these settings, and the update workflow
+refreshes integrations without rewriting reviewer configuration.
 
 Stats includes only completed model reviews; local rules and human confirmations remain available in logs. Usage must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.
+
+## Uninstall
+
+```bash
+any-auto uninstall
+any-auto uninstall --agents agy-cli,pi
+any-auto uninstall --all
+any-auto uninstall --all --dry-run
+```
+
+Bare `uninstall` requires a terminal and lists installed integrations, including
+orphaned any-auto desktop manifests. Nothing is selected by default. Up/Down
+moves, Space toggles, Enter continues, and Esc cancels. Empty selection exits
+without changes. The removal summary lists exact paths and requires confirmation,
+which defaults to No. The root terminal menu also includes **Uninstall integrations**.
+
+`--agents` accepts comma-separated or repeated selections and removes them without
+prompting. `--all` selects all integrations and conflicts with `--agents`.
+`--dry-run` previews only; without a selection it previews all integrations.
+Already removed integrations are successful no-ops.
+
+CLI removal deletes only the `any-auto` key from `~/.gemini/config/hooks.json`.
+Desktop removal deletes `sidecars["any-auto/approver"]` from the shared config and
+its two manifests after checking their name, executable, and arguments. Shared
+JSON files and unrelated entries remain. Pi removal deletes `extensions/any-auto.ts`
+under `PI_CODING_AGENT_DIR`, or `~/.pi/agent` by default.
+
+All integration plans are validated before removal. Invalid JSON or a desktop
+manifest whose any-auto ownership cannot be verified causes an error before
+writes. Files changed after the preview also cause an error before writes.
+
+Reviewer configuration, credentials, logs, history, persisted sessions, and the
+any-auto executable are retained. Existing CLI command permissions are retained
+because installation does not record which permissions were originally user-owned.
+There is no purge option. The shared daemon is kept while integrations remain and
+stopped after the last integration is removed; dry-run never stops it. A daemon
+stop failure is reported separately from the completed integration removal.
+Reload Pi or restart the selected Antigravity agents to unload their integrations;
+an agent that has not reloaded may continue using the integration or restart the daemon.

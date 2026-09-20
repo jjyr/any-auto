@@ -9,30 +9,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
-name = "any-auto"
-version = "0.4.6"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "dialoguer",
- "flate2",
- "fs2",
- "regex",
- "reqwest",
- "serde",
- "serde_json",
- "sha2",
- "tar",
- "tempfile",
- "tokio",
- "toml",
- "toml_edit",
- "tree-sitter",
- "tree-sitter-bash",
-]
-
-[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -98,6 +74,30 @@ dependencies = [
  "anstyle",
  "once_cell_polyfill",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "any-auto"
+version = "0.4.6"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "dialoguer",
+ "flate2",
+ "fs2",
+ "regex",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "toml_edit",
+ "tree-sitter",
+ "tree-sitter-bash",
 ]
 
 [[package]]
@@ -308,6 +308,7 @@ dependencies = [
  "console",
  "shell-words",
  "thiserror 1.0.69",
+ "zeroize",
 ]
 
 [[package]]

@@ -13,9 +13,11 @@ agy CLI hook       Desktop hook       Pi extension
                          |
                 single daemon / shared Unix socket
                          |
-                approver backend interface
-               /         |        |        \
-           agy CLI    agentapi   Pi RPC   OpenAI Responses
+          Backend::review(ReviewInput) -> Assessment
+                      /                 \
+       conversational adapter         Jev
+           /    |     |     \          |
+        agy  agentapi Pi   OpenAI   System One HTTP
                          |
                  shared audit JSONL files
                     /          \
@@ -56,3 +58,37 @@ See [configuration](configuration.md), [commands](commands.md), and
 [Pi extension/RPC contract research](pi-research.md). The
 [Codex Guardian document](auto_approver_architecture.md) is background research, not
 an implementation description of this application.
+
+## Shared review contract
+
+Every backend receives a bounded `ReviewInput` containing the action, workspace,
+user authorization evidence, script evidence, and completeness markers. Every
+backend returns the same `Assessment`. Bridge handles effective configuration
+changes, provider selection, common audit metadata, and fail-closed errors.
+
+The conversational adapter owns the existing session transports, persisted IDs,
+recovery retries, and LLM text parsing. Jev owns a reusable HTTP client, typed
+response validation, and local probability gates. It creates no remote session
+and does not inherit conversation-recovery retries. Local conversation isolation
+and circuit breaker behavior apply to both.
+
+```text
+TOML / environment / agent overrides
+                  |
+            Config resolver
+                  |
+            Backend factory
+                  |
+ReviewInput --> Bridge --> Backend::review --> Assessment --> Pipeline
+                  |              |
+                  |       backend attempt / usage events
+                  |              |
+                  +--------------+--> Audit JSONL --> logs / stats
+```
+
+Pi collects user messages from the active branch once, then sends the same
+context to every reviewer. The private daemon request preserves this context and
+the original tool before normalization. agy requests without the optional
+normalized authorization field explicitly have unavailable evidence. Neither
+conversation IDs nor previous assistant/tool messages establish user approval.
+See [Jev configuration and behavior](jev.md).

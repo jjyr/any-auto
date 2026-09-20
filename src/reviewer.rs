@@ -1,5 +1,6 @@
+pub use crate::review_input::ReviewInput;
 use crate::{audit, config, parser};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -64,7 +65,7 @@ pub fn parse(raw: &str) -> Assessment {
         .unwrap_or("deny")
         .trim()
         .to_lowercase();
-    let outcome = if matches!(outcome.as_str(), "allow" | "deny" | "ask" | "force_ask") {
+    let outcome = if matches!(outcome.as_str(), "allow" | "deny") {
         outcome
     } else {
         "deny".into()
@@ -172,69 +173,13 @@ impl Bridge {
     }
 }
 impl Bridge {
-    async fn session(&mut self, id: &str) -> Result<String> {
-        if let Some(cid) = &self.conversation_id {
-            audit::record(
-                id,
-                "reviewer_session",
-                json!({"conversation_id":cid,"reused":true}),
-            );
-            return Ok(cid.clone());
-        }
-        let config = self
-            .settings
-            .as_ref()
-            .context("Reviewer settings unavailable")?;
-        let cid = self
-            .backend
-            .as_ref()
-            .context("Reviewer backend unavailable")?
-            .create_session(config, id)
-            .await?;
-        audit::record(
-            id,
-            "reviewer_session",
-            json!({"conversation_id":cid,"reused":false}),
-        );
-        if self.temporary.is_none() {
-            std::fs::create_dir_all(self.path.parent().unwrap()).with_context(|| {
-                format!(
-                    "Cannot create reviewer state directory for {}",
-                    self.path.display()
-                )
-            })?;
-            let mut state: Value = std::fs::read(&self.path)
-                .ok()
-                .and_then(|bytes| serde_json::from_slice(&bytes).ok())
-                .filter(Value::is_object)
-                .unwrap_or_else(|| json!({}));
-            if state["conversationId"] != cid {
-                state = json!({});
-            }
-            state["conversationId"] = cid.clone().into();
-            state["config_fingerprint"] = serde_json::json!(self.fingerprint);
-            crate::usage::save(&self.path, &state).with_context(|| {
-                format!("Cannot save reviewer session to {}", self.path.display())
-            })?;
-        }
-        self.conversation_id = Some(cid.clone());
-        Ok(cid)
-    }
-    async fn send(&mut self, payload: &str, id: &str) -> Result<String> {
-        let cid = self.session(id).await?;
-        self.backend
-            .as_ref()
-            .context("Reviewer backend unavailable")?
-            .send_message(&cid, payload, id)
-            .await
-    }
     fn configure(&mut self) -> Result<()> {
         use sha2::{Digest, Sha256};
         let config = config::reviewer_config_for(self.mode)?;
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(
-                &serde_json::json!({"approver":config.approver,"prompt":config.prompt,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
+                &serde_json::json!({"api_key_hash":format!("{:x}", Sha256::digest(config.approver.api_key.as_bytes())),"approver":config.approver,"prompt":config.prompt,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
             )?)
         );
         if self.fingerprint.as_ref() != Some(&fingerprint) {
@@ -255,7 +200,14 @@ impl Bridge {
             } else {
                 workspace
             };
-            self.backend = Some(crate::backend::for_config(&config, workspace));
+            self.backend = Some(crate::backend::for_config(
+                &config,
+                workspace,
+                self.path.clone(),
+                fingerprint.clone(),
+                self.conversation_id.clone(),
+                self.temporary.is_none(),
+            )?);
         }
         self.fingerprint = Some(fingerprint);
         self.settings = Some(config);
@@ -266,56 +218,28 @@ impl Bridge {
             return Assessment::deny(format!("Invalid reviewer configuration: {e:#}"));
         }
 
-        let generated_id = audit::request_id();
-        let id = req["request_id"].as_str().unwrap_or(&generated_id);
-        let ws = req["workspacePaths"]
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
-        let paths = ws
-            .iter()
-            .filter_map(Value::as_str)
-            .collect::<Vec<_>>()
-            .join(", ");
-        let mut action = json!({"environment": {"workspace_paths": if paths.is_empty() {"Current Workspace"} else {&paths}},
-            "tool": req["toolCall"]["name"], "args": req["toolCall"]["args"]});
-        if req["toolCall"]["name"] == "run_command" {
-            let script = script_content(
-                req["toolCall"]["args"]["CommandLine"]
-                    .as_str()
-                    .unwrap_or(""),
-                &ws,
-            );
-            if !script.is_empty() {
-                action["inspected_script"] = script.into();
-            }
-        }
-        let cached = self.conversation_id.is_some();
-        let payload = action.to_string();
+        let input = ReviewInput::from_request(req);
+        let id = &input.request_id;
         audit::record(
             id,
             "reviewer_input",
-            json!({"action":action,"user_session_id":req["user_session_id"]}),
+            json!({"action":input.state["action"],
+            "completeness":input.state["completeness"], "user_session_id":req["user_session_id"]}),
         );
-        let mut result = self.send(&payload, id).await;
-        if result.is_err() && cached {
-            audit::record(
-                id,
-                "reviewer_retry",
-                json!({"reason":"Cached session failed; recreating conversation"}),
-            );
-            self.conversation_id = None;
-            let _ = std::fs::remove_file(&self.path);
-            result = self.send(&payload, id).await;
-        }
-        let mut assessment = match result {
-            Ok(raw) => parse(&raw),
+        let backend = self.backend.as_mut().expect("configured backend");
+        let mut assessment = match backend.review(&input).await {
+            Ok(value) => value,
             Err(err) => Assessment::deny(format!("Approver review failed: {err:#}")),
         };
+        self.conversation_id = backend.conversation_id().map(str::to_owned);
         if let Some(settings) = &self.settings {
-            assessment.reviewer = Some(
-                json!({"provider":settings.approver.provider,"model":settings.approver.model,"effort_requested":settings.approver.effort}),
-            );
+            let metadata = assessment.reviewer.get_or_insert_with(|| json!({}));
+            metadata["provider"] = json!(settings.approver.provider);
+            metadata["requested_model"] = json!(settings.approver.model);
+            if metadata["model"].is_null() {
+                metadata["model"] = json!(settings.approver.model);
+            }
+            metadata["effort_requested"] = json!(settings.approver.effort);
         }
         audit::record(id, "reviewer_result", json!({"assessment":assessment}));
         assessment

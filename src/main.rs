@@ -1,4 +1,4 @@
-use any_auto::{audit, config, daemon, install, pipeline, stats, ui, upgrade};
+use any_auto::{audit, config, daemon, install, pipeline, stats, ui, uninstall, upgrade};
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
@@ -81,6 +81,11 @@ enum Commands {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Remove selected integrations, preserving configuration and history.
+    Uninstall {
+        #[command(flatten)]
+        options: uninstall::Options,
+    },
     /// Install integrations: no arguments opens the terminal wizard.
     Install {
         #[command(flatten)]
@@ -133,7 +138,7 @@ async fn main() -> Result<()> {
             std::env::args_os().count() == 1,
             "Choose a subcommand; see --help"
         );
-        return ui::run();
+        return ui::run().await;
     };
     match command {
         Commands::Doctor => install::doctor()?,
@@ -247,6 +252,7 @@ async fn main() -> Result<()> {
         }
         Commands::Update { version } => upgrade::update(version.as_deref()).await?,
         Commands::Install { options } => install::run(options)?,
+        Commands::Uninstall { options } => uninstall::run(options).await?,
         Commands::Daemon { command } => match command {
             DaemonCommand::Run {
                 idle_timeout,

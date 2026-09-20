@@ -196,7 +196,11 @@ pub async fn evaluate(payload: &Value) -> Value {
         .unwrap_or_else(audit::request_id);
     let payload = &normalize(payload);
     let started = std::time::Instant::now();
-    audit::record(&id, "hook_input", json!({"input":payload}));
+    audit::record(
+        &id,
+        "hook_input",
+        json!({"input":audit::without_authorization(payload.clone())}),
+    );
     let mut stage = "reviewer";
     let mut reviewer = Value::Null;
     // Includes waiting for this user's circuit breaker lock and daemon startup/review.

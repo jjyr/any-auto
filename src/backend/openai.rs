@@ -1,5 +1,5 @@
 //! Direct Responses API backend; no tools are supplied to the model.
-use super::{Backend, BackendFuture};
+use super::{BackendFuture, SessionTransport};
 use crate::{audit, config::ReviewerConfig};
 use anyhow::{Context, Result, ensure};
 use serde_json::{Value, json};
@@ -20,9 +20,8 @@ impl OpenAiBackend {
         self.workspace.join("response.json")
     }
     async fn review(&self, payload: &str, id: &str) -> Result<String> {
-        let key = crate::context::var(&self.config.approver.api_key_env)
-            .context("OpenAI approver API key environment variable is missing")?;
-        ensure!(!key.is_empty(), "OpenAI approver API key is empty");
+        let key = &self.config.approver.api_key;
+        ensure!(!key.trim().is_empty(), "OpenAI approver API key is empty");
         let endpoint = format!(
             "{}/responses",
             self.config.approver.base_url.trim_end_matches('/')
@@ -118,7 +117,7 @@ impl OpenAiBackend {
         Ok(text)
     }
 }
-impl Backend for OpenAiBackend {
+impl SessionTransport for OpenAiBackend {
     fn create_session<'a>(&'a self, _: &'a ReviewerConfig, _: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
             let _ = std::fs::remove_file(self.state());

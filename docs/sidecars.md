@@ -1,7 +1,7 @@
 # Antigravity sidecar
 
 Desktop installation and its agentapi connection remain supported. The default
-Desktop reviewer is agy CLI (`cli`); configure `agentapi`, `pi`, or `openai` through `any-auto config --edit` if needed.
+Desktop reviewer is agy CLI (`cli`); configure `agentapi`, `pi`, `openai`, or `jev` through `any-auto config --edit` if needed.
 See [configuration](configuration.md) for provider selection and
 [commands](commands.md) for current daemon, log and stats behavior.
 
@@ -31,3 +31,7 @@ Restart the Desktop agent after installation/update to reload its sidecar.
 `daemon reset --agent agy-desktop --instance NAME` resets that instance's reviewer cache
 but retains circuit breakers. Restart preserves persisted sessions. Shared daily audit logs record agent, provider and instance;
 logs and stats need no running daemon.
+
+Jev requires user-origin authorization evidence for automatic approval. agy hooks
+currently have no verified automatic message collector; without supplied evidence,
+Jev routes reviewed actions to human confirmation. See [Jev context handling](jev.md#context-sent-for-review).

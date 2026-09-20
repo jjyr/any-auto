@@ -8,11 +8,11 @@ Auto-approve for Antigravity (agy) and Pi, powered by the AI backend of your cho
 ```text
  Coding agents           Auto-approve           Reviewer backends
 
-+-------------------+    +--------------+    +-----------------------+
-| agy CLI / Desktop |--->|              |--->| CLI: agy or Pi        |
-|                   |    | any-auto     |    |                       |
-| Pi                |--->|              |--->| API: OpenAI Responses |
-+-------------------+    +--------------+    +-----------------------+
++-------------------+    +--------------+    +---------------------------+
+| Antigravity       |--->|              |--->| Jev: System One           |
+|                   |    | any-auto     |--->| CLI: agy or Pi            |
+| Pi                |--->|              |--->| API: OpenAI Responses     |
++-------------------+    +--------------+    +---------------------------+
 ```
 
 Automatically review tool requests and approve them when appropriate, so your
@@ -28,7 +28,7 @@ read-only tools and blocked commands; other requests go to an AI reviewer that
 assesses risk and user authorization.
 
 ```text
-Antigravity CLI / Desktop / Pi
+Antigravity / Pi
            |
      Approval hook
            |
@@ -45,9 +45,10 @@ Antigravity CLI / Desktop / Pi
      Error or timeout -----------------> Deny
 ```
 
-The daemon maintains a separate reviewer session for each user conversation, allowing the model service
+Conversational backends maintain a separate reviewer session for each user conversation, allowing the model service
 to reuse KV/prompt caches for shared context. Cache hits can reduce repeated
 processing and input-token costs, depending on the provider's caching and pricing.
+
 Idle sessions leave memory after five minutes; Pi RPC children are terminated and reaped.
 The next request restores persisted state. Each Pi session owns its own RPC process.
 Repeated AI-review denials trip the circuit breaker, requiring user review on
@@ -129,6 +130,29 @@ effort = "low"
 
 `config` shows all agents and setting sources. Legacy configuration is not read.
 Logs/stats and sessions start fresh; see [configuration and directory details](docs/configuration.md#overview-tui-and-directories).
+
+### Jev
+
+Add to `~/.config/any-auto/config.toml` (open with `any-auto config --edit`):
+
+```toml
+[approver]
+provider = "jev"
+base_url = "https://api.typesafe.ai/v1"
+api_key = "your-api-key"
+model = "jev-1.13.0"
+probability_threshold = 0.9
+```
+
+To configure only one agent, replace `[approver]` above with its table name:
+
+- Pi: `[agents.pi.approver]`
+- Antigravity CLI (agy): `[agents.agy-cli.approver]`
+- Antigravity Desktop: `[agents.agy-desktop.approver]`
+
+Keep the same fields under the selected table. To configure both Antigravity CLI
+and Desktop, add both tables with the desired settings. See [Jev setup](docs/jev.md)
+for configuration overrides and custom instructions.
 
 ## Commands
 

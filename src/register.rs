@@ -134,6 +134,6 @@ pub fn register_pi() -> Result<()> {
     use std::io::Write;
     file.write_all(source.as_bytes())?;
     file.persist(&path)?;
-    println!("Installed {}. Run /reload in Pi.", path.display());
+    println!("Installed {}", path.display());
     Ok(())
 }

@@ -162,5 +162,8 @@ fn old_routing_names_are_rejected_without_aliases() {
         .output()
         .unwrap();
     assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("unknown field `hosts`"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("Invalid TOML or unsupported configuration field")
+    );
 }

@@ -1,6 +1,8 @@
-//! Session-oriented backend interface, independent of executable and response format.
+//! Unified typed reviews; conversational transports remain an internal implementation detail.
 mod agentapi;
 mod agy;
+mod conversational;
+pub(crate) mod jev;
 mod openai;
 mod pi;
 mod process;
@@ -15,19 +17,44 @@ use std::{future::Future, path::PathBuf, pin::Pin};
 // Boxed Send futures keep the async interface usable through a trait object.
 pub type BackendFuture<'a> = Pin<Box<dyn Future<Output = Result<String>> + Send + 'a>>;
 
-pub trait Backend: Send + Sync {
+pub trait SessionTransport: Send + Sync {
     fn create_session<'a>(&'a self, config: &'a ReviewerConfig, id: &'a str) -> BackendFuture<'a>;
     fn send_message<'a>(&'a self, cid: &'a str, payload: &'a str, id: &'a str)
     -> BackendFuture<'a>;
 }
 
-pub fn for_config(config: &ReviewerConfig, workspace: PathBuf) -> Box<dyn Backend> {
-    match config.approver.provider {
+pub type ReviewFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<crate::reviewer::Assessment>> + Send + 'a>>;
+pub trait Backend: Send + Sync {
+    fn review<'a>(&'a mut self, input: &'a crate::reviewer::ReviewInput) -> ReviewFuture<'a>;
+    fn conversation_id(&self) -> Option<&str> {
+        None
+    }
+}
+
+pub fn for_config(
+    config: &ReviewerConfig,
+    workspace: PathBuf,
+    path: PathBuf,
+    fingerprint: String,
+    conversation_id: Option<String>,
+    persistent: bool,
+) -> Result<Box<dyn Backend>> {
+    let transport: Box<dyn SessionTransport> = match config.approver.provider {
+        Provider::Jev => return Ok(Box::new(jev::JevBackend::new(config.clone())?)),
         Provider::Agentapi => Box::new(AgentApiBackend),
         Provider::Cli => Box::new(AgyBackend::new(workspace, config.clone())),
         Provider::Pi => Box::new(pi::PiBackend::new(workspace, config.clone())),
         Provider::Openai => Box::new(openai::OpenAiBackend::new(workspace, config.clone())),
-    }
+    };
+    Ok(Box::new(conversational::ConversationalBackend {
+        transport,
+        config: config.clone(),
+        conversation_id,
+        path,
+        fingerprint,
+        persistent,
+    }))
 }
 
 fn conversation_id(v: &Value) -> Result<String> {

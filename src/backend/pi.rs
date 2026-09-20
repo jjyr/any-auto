@@ -1,5 +1,5 @@
 //! One cancellable, persistent RPC child per reviewer conversation.
-use super::{Backend, BackendFuture};
+use super::{BackendFuture, SessionTransport};
 use crate::{audit, config::ReviewerConfig};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
@@ -276,7 +276,7 @@ impl PiBackend {
         Ok(rpc)
     }
 }
-impl Backend for PiBackend {
+impl SessionTransport for PiBackend {
     fn create_session<'a>(&'a self, _: &'a ReviewerConfig, _: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
             self.rpc.lock().await.take();

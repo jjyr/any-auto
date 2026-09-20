@@ -121,7 +121,7 @@ pub async fn review(payload: &Value) -> Result<Assessment> {
 }
 pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     start().await?;
-    let req = json!({"action":"evaluate", "context":crate::context::RequestContext::capture()?, "mode":config::mode(), "request_id":id, "user_session_id":crate::sessions::user_session_id(payload), "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"]});
+    let req = json!({"action":"evaluate", "context":crate::context::RequestContext::capture()?, "mode":config::mode(), "request_id":id, "user_session_id":crate::sessions::user_session_id(payload), "toolCall":payload["toolCall"], "workspacePaths":payload["workspacePaths"], "original_tool":payload.get("original_tool").unwrap_or(&payload["toolCall"]), "authorization":payload["authorization"]});
     let v = request(&config::socket_path(), &req, 25).await?;
     let a: Assessment =
         serde_json::from_value(v["assessment"].clone()).context("Invalid daemon assessment")?;

@@ -11,12 +11,38 @@ pub enum Agent {
     Pi,
 }
 impl Agent {
-    fn name(self) -> &'static str {
+    pub(crate) fn name(self) -> &'static str {
         match self {
             Self::AgyCli => "agy-cli",
             Self::AgyDesktop => "agy-desktop",
             Self::Pi => "pi",
         }
+    }
+    fn mode(self) -> config::Mode {
+        match self {
+            Self::AgyCli => config::Mode::Cli,
+            Self::AgyDesktop => config::Mode::Sidecar,
+            Self::Pi => config::Mode::Pi,
+        }
+    }
+    fn installed(self) -> bool {
+        if self == Self::Pi {
+            return pi_extension().is_file();
+        }
+        let base = config::home().join(".gemini/config");
+        let path = base.join(if self == Self::AgyCli {
+            "hooks.json"
+        } else {
+            "config.json"
+        });
+        std::fs::read(path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some_and(|value| match self {
+                Self::AgyCli => value.get("any-auto").is_some(),
+                Self::AgyDesktop => value["sidecars"].get("any-auto/approver").is_some(),
+                Self::Pi => unreachable!(),
+            })
     }
     fn detected(self) -> bool {
         match self {
@@ -39,6 +65,87 @@ impl Agent {
         }
     }
 }
+pub(crate) fn pi_extension() -> PathBuf {
+    std::env::var_os("PI_CODING_AGENT_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| config::home().join(".pi/agent"))
+        .join("extensions/any-auto.ts")
+}
+
+fn installation_summary(agents: &[Agent]) -> Result<()> {
+    println!("\nInstallation summary");
+    for agent in agents {
+        println!(
+            "\n{} {} integration{}",
+            if agent.installed() {
+                "Update"
+            } else {
+                "Install"
+            },
+            agent.name(),
+            if agent.detected() {
+                ""
+            } else {
+                " (agent not detected; pre-install)"
+            }
+        );
+        println!(
+            "  Action: {}",
+            match agent {
+                Agent::AgyCli => "install/update the approval hook",
+                Agent::AgyDesktop => "enable/update the approval sidecar",
+                Agent::Pi => "install/update the approval extension",
+            }
+        );
+        if *agent == Agent::AgyCli
+            && config::home()
+                .join(".gemini/antigravity-cli/settings.json")
+                .exists()
+        {
+            println!("  Add standard development command permissions to existing agy settings.");
+        }
+        let settings = config::reviewer_config_for(agent.mode())?;
+        let source = settings
+            .approver_sources
+            .get("provider")
+            .map(String::as_str)
+            .unwrap_or("default");
+        let source = if source == "default" {
+            "default".to_owned()
+        } else if source.starts_with("ANY_AUTO_") {
+            format!("environment override: {source}")
+        } else {
+            format!("existing configuration: {source}")
+        };
+        println!(
+            "  Reviewer: {} ({source})",
+            settings.approver.provider.as_str()
+        );
+        if let Some(model) = settings.approver.model {
+            println!("  Model: {model}");
+        }
+        if settings.approver.provider == config::Provider::Jev {
+            println!(
+                "  Probability threshold: {}",
+                settings.approver.probability_threshold
+            );
+        }
+    }
+    println!(
+        "\nExisting reviewer settings are preserved; API credentials are not requested or changed."
+    );
+    println!("Unselected integrations are left unchanged; this command does not uninstall them.");
+    println!("Defaults without overrides: Antigravity CLI/Desktop use agy CLI; Pi uses Pi RPC.");
+    println!(
+        "Reviewers above reflect the current configuration and environment; the agent's launch environment can override them."
+    );
+    println!(
+        "After installation and agent reload/restart, approval hooks automatically review tool requests."
+    );
+    println!("Change reviewers: any-auto > Configure approvers, or any-auto config --edit.\n");
+    Ok(())
+}
+
 fn executable(name: &str) -> bool {
     std::env::var_os("PATH").is_some_and(|path| {
         std::env::split_paths(&path).any(|dir| {
@@ -102,18 +209,29 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
             .iter()
             .map(|agent| {
                 format!(
-                    "{} ({})",
+                    "{} ({}, {})",
                     agent.name(),
                     if agent.detected() {
                         "detected"
                     } else {
                         "not detected; pre-install"
+                    },
+                    if agent.installed() {
+                        "installed; select to update"
+                    } else {
+                        "not installed"
                     }
                 )
             })
             .collect();
+        println!(
+            "Detected agents are selected by default. You may also select undetected agents to pre-install."
+        );
+        println!("Unselected integrations stay unchanged; selecting none makes no changes.");
         let selected = MultiSelect::new()
-            .with_prompt("Install integrations (Space selects, Enter continues)")
+            .with_prompt(
+                "Install integrations: Up/Down move, Space toggles, Enter continues, Esc cancels",
+            )
             .items(&labels)
             .defaults(&all.map(Agent::detected))
             .interact_opt()?;
@@ -131,34 +249,19 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     if agents.is_empty() {
         bail!("No agents detected. Use install --agents to select an integration explicitly.");
     }
-    agents.dedup();
-    for agent in &agents {
-        println!(
-            "Install {} integration{}",
-            agent.name(),
-            if agent.detected() {
-                ""
-            } else {
-                " (agent not detected)"
-            }
-        );
-    }
-    println!(
-        "Existing approver settings are preserved. Use `any-auto config --edit` to change them."
-    );
+    // Repeated --agents values need only one preview and one registration.
+    let agents: Vec<_> = all
+        .into_iter()
+        .filter(|agent| agents.contains(agent))
+        .collect();
+    installation_summary(&agents)?;
     let cli = agents.contains(&Agent::AgyCli);
     let desktop = agents.contains(&Agent::AgyDesktop);
     if cli || desktop {
         register::preview(!desktop, !cli)?;
     }
     if agents.contains(&Agent::Pi) {
-        let base = std::env::var_os("PI_CODING_AGENT_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| config::home().join(".pi/agent"));
-        println!(
-            "Would install {}",
-            base.join("extensions/any-auto.ts").display()
-        );
+        println!("Would install {}", pi_extension().display());
     }
     if options.dry_run {
         println!("Dry run: no files changed.");
@@ -178,6 +281,17 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     if agents.contains(&Agent::Pi) {
         register::register_pi()?;
     }
+    println!("\nInstallation complete.");
+    if cli {
+        println!("Antigravity CLI: restart the agent to load the updated approval hook.");
+    }
+    if desktop {
+        println!("Antigravity Desktop: restart the app to load the updated approval sidecar.");
+    }
+    if agents.contains(&Agent::Pi) {
+        println!("Pi: run /reload or restart Pi to load the updated extension.");
+    }
+    println!("Check setup: any-auto doctor. Change reviewers: any-auto config --edit.");
     Ok(())
 }
 
@@ -214,8 +328,8 @@ pub fn doctor() -> Result<()> {
                     config::Provider::Agentapi => {
                         std::env::var_os("ANTIGRAVITY_LS_ADDRESS").is_some()
                     }
-                    config::Provider::Openai => {
-                        std::env::var(&c.approver.api_key_env).is_ok_and(|v| !v.is_empty())
+                    config::Provider::Openai | config::Provider::Jev => {
+                        !c.approver.api_key.trim().is_empty()
                     }
                 };
                 println!(

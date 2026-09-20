@@ -406,6 +406,16 @@ pub async fn follow(filter: &Filter, json_output: bool) -> Result<()> {
     }
 }
 
+/// Do not persist user conversation text collected for authorization.
+pub(crate) fn without_authorization(mut value: Value) -> Value {
+    if let Some(object) = value.as_object_mut()
+        && let Some(auth) = object.get_mut("authorization")
+    {
+        *auth = json!({"availability":auth["availability"],"content":"[not logged]"});
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

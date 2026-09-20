@@ -1,4 +1,4 @@
-use super::{Backend, BackendFuture, conversation_id, process};
+use super::{BackendFuture, SessionTransport, conversation_id, process};
 use crate::config::ReviewerConfig;
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -10,7 +10,7 @@ pub struct AgyBackend {
     config: ReviewerConfig,
 }
 
-impl Backend for AgyBackend {
+impl SessionTransport for AgyBackend {
     fn create_session<'a>(&'a self, config: &'a ReviewerConfig, id: &'a str) -> BackendFuture<'a> {
         Box::pin(async move {
             let prompt = format!(

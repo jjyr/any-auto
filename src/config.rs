@@ -178,6 +178,7 @@ pub enum Provider {
     Pi,
     Cli,
     Openai,
+    Jev,
     Agentapi,
 }
 impl Provider {
@@ -186,6 +187,7 @@ impl Provider {
             Self::Pi => "pi",
             Self::Cli => "cli",
             Self::Openai => "openai",
+            Self::Jev => "jev",
             Self::Agentapi => "agentapi",
         }
     }
@@ -197,7 +199,9 @@ struct ApproverSettings {
     model: Option<String>,
     effort: Option<String>,
     base_url: Option<String>,
-    api_key_env: Option<String>,
+    api_key: Option<String>,
+    probability_threshold: Option<f64>,
+    instructions: Option<JevInstructions>,
 }
 #[derive(Default, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -215,13 +219,37 @@ struct Agents {
     #[serde(default)]
     pi: AgentSettings,
 }
+/// Per-question instruction replacements. Answer options and local gates stay fixed.
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct JevInstructions {
+    pub risk: Option<String>,
+    pub authorization: Option<String>,
+    pub policy: Option<String>,
+}
+impl JevInstructions {
+    fn merge(&mut self, other: Self) {
+        if other.risk.is_some() {
+            self.risk = other.risk;
+        }
+        if other.authorization.is_some() {
+            self.authorization = other.authorization;
+        }
+        if other.policy.is_some() {
+            self.policy = other.policy;
+        }
+    }
+}
 #[derive(Clone, serde::Serialize)]
 pub struct ApproverConfig {
     pub provider: Provider,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub base_url: String,
-    pub api_key_env: String,
+    #[serde(serialize_with = "serialize_api_key")]
+    pub api_key: String,
+    pub probability_threshold: f64,
+    pub instructions: JevInstructions,
 }
 #[derive(Clone, serde::Serialize)]
 pub struct ReviewerConfig {
@@ -249,6 +277,7 @@ fn file_config() -> anyhow::Result<FileConfig> {
     read_optional(&config_path())?
         .map(|text| {
             toml::from_str(&text)
+                .map_err(|_| anyhow::anyhow!("Invalid TOML or unsupported configuration field"))
                 .with_context(|| format!("Invalid configuration: {}", config_path().display()))
         })
         .unwrap_or_else(|| Ok(FileConfig::default()))
@@ -308,13 +337,34 @@ fn resolve_config(
         Mode::Pi => file.agents.pi.approver,
     };
     let mut sources = std::collections::BTreeMap::new();
-    for key in ["provider", "model", "effort", "base_url", "api_key_env"] {
+    for key in [
+        "provider",
+        "model",
+        "effort",
+        "base_url",
+        "api_key",
+        "probability_threshold",
+        "instructions",
+        "instructions.risk",
+        "instructions.authorization",
+        "instructions.policy",
+    ] {
         sources.insert(key.to_owned(), "default".to_owned());
     }
     let common = serde_json::to_value(&file.approver)?;
     for (key, value) in common.as_object().unwrap() {
         if !value.is_null() {
             sources.insert(key.clone(), "[approver]".into());
+            if key == "instructions" {
+                for (name, text) in value.as_object().unwrap() {
+                    if !text.is_null() {
+                        sources.insert(
+                            format!("instructions.{name}"),
+                            "[approver.instructions]".into(),
+                        );
+                    }
+                }
+            }
         }
     }
     let agent_values = serde_json::to_value(&agent)?;
@@ -326,6 +376,16 @@ fn resolve_config(
     for (key, value) in agent_values.as_object().unwrap() {
         if !value.is_null() {
             sources.insert(key.clone(), format!("[agents.{}.approver]", mode.agent()));
+            if key == "instructions" {
+                for (name, text) in value.as_object().unwrap() {
+                    if !text.is_null() {
+                        sources.insert(
+                            format!("instructions.{name}"),
+                            format!("[agents.{}.approver.instructions]", mode.agent()),
+                        );
+                    }
+                }
+            }
         }
     }
     if agent.provider.is_some() {
@@ -340,8 +400,17 @@ fn resolve_config(
     if agent.base_url.is_some() {
         settings.base_url = agent.base_url;
     }
-    if agent.api_key_env.is_some() {
-        settings.api_key_env = agent.api_key_env;
+    if agent.api_key.is_some() {
+        settings.api_key = agent.api_key;
+    }
+    if agent.probability_threshold.is_some() {
+        settings.probability_threshold = agent.probability_threshold;
+    }
+    if let Some(instructions) = agent.instructions {
+        settings
+            .instructions
+            .get_or_insert_with(Default::default)
+            .merge(instructions);
     }
     if let Ok(value) = crate::context::var("ANY_AUTO_PROVIDER")
         && environment
@@ -352,13 +421,71 @@ fn resolve_config(
             settings.model = None;
             settings.effort = None;
             settings.base_url = None;
-            settings.api_key_env = None;
+            settings.api_key = None;
+            settings.probability_threshold = None;
+            settings.instructions = None;
             sources.values_mut().for_each(|s| *s = "default".into());
         }
         settings.provider = Some(provider);
         sources.insert("provider".into(), "ANY_AUTO_PROVIDER".into());
     }
     let provider = settings.provider.unwrap_or(defaults);
+    for (field, variable) in [
+        ("base_url", "ANY_AUTO_BASE_URL"),
+        ("api_key", "ANY_AUTO_API_KEY"),
+    ] {
+        if let Ok(value) = crate::context::var(variable)
+            && environment
+            && (field == "api_key" || !value.is_empty())
+        {
+            if field == "base_url" {
+                settings.base_url = Some(value);
+            } else {
+                settings.api_key = Some(value);
+            }
+            sources.insert(field.into(), variable.into());
+        }
+    }
+    anyhow::ensure!(
+        provider == Provider::Jev
+            || (settings.probability_threshold.is_none() && settings.instructions.is_none()),
+        "probability_threshold and instructions are only supported by the Jev backend"
+    );
+    let probability_threshold = settings.probability_threshold.unwrap_or(0.9);
+    anyhow::ensure!(
+        probability_threshold.is_finite() && (0.0..=1.0).contains(&probability_threshold),
+        "Jev probability_threshold must be a finite number between 0 and 1"
+    );
+    let mut instructions = settings.instructions.unwrap_or_default();
+    for value in [
+        &instructions.risk,
+        &instructions.authorization,
+        &instructions.policy,
+    ]
+    .into_iter()
+    .flatten()
+    {
+        anyhow::ensure!(
+            !value.trim().is_empty() && value.len() <= 4096,
+            "Jev instructions must contain 1-4096 bytes of nonblank text"
+        );
+    }
+    anyhow::ensure!(
+        provider != Provider::Jev || prompt_source == "default",
+        "Jev uses approver.instructions, not prompt/ANY_AUTO_PROMPT"
+    );
+    if provider == Provider::Jev {
+        let effective = crate::backend::jev::questions(&instructions);
+        instructions.risk = effective["risk"]["instructions"]
+            .as_str()
+            .map(str::to_owned);
+        instructions.authorization = effective["authorization"]["instructions"]
+            .as_str()
+            .map(str::to_owned);
+        instructions.policy = effective["policy"]["instructions"]
+            .as_str()
+            .map(str::to_owned);
+    }
     let legacy_model = match provider {
         Provider::Cli => cli_model.trim(),
         Provider::Agentapi => model,
@@ -386,6 +513,11 @@ fn resolve_config(
         .filter(|v| environment && !v.is_empty())
         .or(settings.model)
         .unwrap_or_else(|| legacy_model.into());
+    let selected_model = if provider == Provider::Jev && selected_model.trim().is_empty() {
+        "jev-1.13.0".into()
+    } else {
+        selected_model
+    };
     let effort = crate::context::var("ANY_AUTO_EFFORT")
         .ok()
         .filter(|v| environment && !v.is_empty())
@@ -402,7 +534,7 @@ fn resolve_config(
                 effort.as_str(),
                 "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
             ),
-            Provider::Agentapi => false,
+            Provider::Agentapi | Provider::Jev => false,
         };
         anyhow::ensure!(
             supported,
@@ -424,13 +556,25 @@ fn resolve_config(
         provider,
         model: (!selected_model.trim().is_empty()).then(|| selected_model.trim().into()),
         effort,
-        base_url: settings
-            .base_url
-            .unwrap_or_else(|| "https://api.openai.com/v1".into()),
-        api_key_env: settings
-            .api_key_env
-            .unwrap_or_else(|| "OPENAI_API_KEY".into()),
+        probability_threshold,
+        instructions,
+        base_url: settings.base_url.unwrap_or_else(|| {
+            if provider == Provider::Jev {
+                "https://api.typesafe.ai/v1"
+            } else {
+                "https://api.openai.com/v1"
+            }
+            .into()
+        }),
+        api_key: settings.api_key.unwrap_or_default(),
     };
+    if provider == Provider::Jev {
+        crate::backend::jev::client::endpoint(&approver.base_url)?;
+    }
+    anyhow::ensure!(
+        !approver.api_key.contains(['\r', '\n', '\0']),
+        "Invalid API key: control characters are not allowed"
+    );
     Ok(ReviewerConfig {
         approver,
         approver_sources: sources,
@@ -456,9 +600,9 @@ fn print_approver(
     let row = |label: &str, key: &str, value: &str| {
         let source = sources.get(key).map(String::as_str).unwrap_or("default");
         if source == "default" {
-            println!("  {label:<10}{value}");
+            println!("  {label:<10} {value}");
         } else {
-            println!("  {label:<10}{value}  (from {source})");
+            println!("  {label:<10} {value}  (from {source})");
         }
     };
     row("Approver", "provider", approver.provider.as_str());
@@ -467,15 +611,49 @@ fn print_approver(
         "model",
         approver.model.as_deref().unwrap_or("default"),
     );
-    row(
-        "Effort",
-        "effort",
-        approver.effort.as_deref().unwrap_or("default"),
-    );
-    if approver.provider == Provider::Openai {
-        row("Base URL", "base_url", &approver.base_url);
-        row("API key", "api_key_env", &approver.api_key_env);
+    if approver.provider != Provider::Jev {
+        row(
+            "Effort",
+            "effort",
+            approver.effort.as_deref().unwrap_or("default"),
+        );
     }
+    if matches!(approver.provider, Provider::Openai | Provider::Jev) {
+        row("Base URL", "base_url", &approver.base_url);
+        row(
+            "API key",
+            "api_key",
+            if approver.api_key.trim().is_empty() {
+                "not configured"
+            } else {
+                "[REDACTED]"
+            },
+        );
+    }
+    if approver.provider == Provider::Jev {
+        row(
+            "Threshold",
+            "probability_threshold",
+            &approver.probability_threshold.to_string(),
+        );
+        let defaults = crate::backend::jev::questions(&approver.instructions);
+        for key in ["risk", "authorization", "policy"] {
+            let field = format!("instructions.{key}");
+            row(
+                &field,
+                &field,
+                defaults[key]["instructions"].as_str().unwrap(),
+            );
+        }
+    }
+}
+
+fn serialize_api_key<S: serde::Serializer>(key: &str, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_str(if key.trim().is_empty() {
+        ""
+    } else {
+        "[REDACTED]"
+    })
 }
 
 pub fn show(json: bool) -> anyhow::Result<()> {
@@ -559,7 +737,12 @@ pub fn edit() -> anyhow::Result<()> {
 /// Validate all agents before saving a staged configuration.
 pub fn validate_text(text: &str) -> anyhow::Result<()> {
     for agent in [Mode::Cli, Mode::Sidecar, Mode::Pi] {
-        resolve_config(agent, toml::from_str(text)?, false)?;
+        resolve_config(
+            agent,
+            toml::from_str(text)
+                .map_err(|_| anyhow::anyhow!("Invalid TOML or unsupported configuration field"))?,
+            false,
+        )?;
     }
     Ok(())
 }
@@ -598,4 +781,81 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
         println!("Precedence: defaults < [approver] < [agents.NAME.approver] < environment");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod jev_tests {
+    use super::*;
+    fn resolve(text: &str, mode: Mode) -> anyhow::Result<ReviewerConfig> {
+        resolve_config(mode, toml::from_str(text)?, false)
+    }
+    #[test]
+    fn jev_defaults_and_instruction_inheritance() {
+        let c = resolve("[approver]\nprovider='jev'\n", Mode::Pi).unwrap();
+        assert_eq!(c.approver.probability_threshold, 0.9);
+        assert_eq!(c.approver.model.as_deref(), Some("jev-1.13.0"));
+        assert!(c.approver.api_key.is_empty());
+        assert_eq!(c.approver.base_url, "https://api.typesafe.ai/v1");
+        let text = "[approver]\nprovider='jev'\nprobability_threshold=0.8\n[approver.instructions]\nrisk='common risk'\npolicy='common policy'\n[agents.pi.approver]\nprobability_threshold=0.95\n[agents.pi.approver.instructions]\nrisk='pi risk'\n";
+        let c = resolve(text, Mode::Pi).unwrap();
+        assert_eq!(c.approver.probability_threshold, 0.95);
+        assert_eq!(c.approver.instructions.risk.as_deref(), Some("pi risk"));
+        assert_eq!(
+            c.approver.instructions.policy.as_deref(),
+            Some("common policy")
+        );
+        let c = resolve(text, Mode::Cli).unwrap();
+        assert_eq!(c.approver.instructions.risk.as_deref(), Some("common risk"));
+        let c = resolve(
+            &format!("{text}\n[agents.agy-cli.approver]\nprovider='cli'\n"),
+            Mode::Cli,
+        )
+        .unwrap();
+        assert!(c.approver.instructions.risk.is_none());
+    }
+    #[test]
+    fn direct_keys_inherit_override_and_reset_with_provider() {
+        let text = "[approver]\nprovider='jev'\napi_key='common-secret'\n[agents.pi.approver]\napi_key='pi-secret'\n[agents.agy-desktop.approver]\nprovider='openai'\nmodel='fixture'\n";
+        assert_eq!(
+            resolve(text, Mode::Cli).unwrap().approver.api_key,
+            "common-secret"
+        );
+        let pi = resolve(text, Mode::Pi).unwrap();
+        assert_eq!(pi.approver.api_key, "pi-secret");
+        assert!(!serde_json::to_string(&pi).unwrap().contains("pi-secret"));
+        assert!(
+            resolve(text, Mode::Sidecar)
+                .unwrap()
+                .approver
+                .api_key
+                .is_empty()
+        );
+        assert!(validate_text("[approver]\napi_key_env='OLD_KEY'").is_err());
+    }
+    #[test]
+    fn reject_invalid_jev_configuration() {
+        for text in [
+            "[approver]\nprovider='jev'\nprobability_threshold=nan",
+            "[approver]\nprovider='jev'\nprobability_threshold=1.1",
+            "[approver]\nprovider='jev'\nprobability_threshold=-0.1",
+            "[approver]\nprovider='pi'\nprobability_threshold=0.9",
+            "[approver]\nprovider='jev'\neffort='low'",
+            "prompt='custom'\n[approver]\nprovider='jev'",
+            "[approver]\nprovider='jev'\nbase_url='http://example.com/v1'",
+            "[approver]\nprovider='jev'\napi_key='bad\nkey'",
+            "[approver]\nprovider='jev'\n[approver.instructions]\nrisk=' '",
+            "[approver]\nprovider='jev'\n[approver.instructions]\nunknown='bad'",
+        ] {
+            assert!(resolve(text, Mode::Pi).is_err(), "{text}");
+        }
+        for threshold in [0, 1] {
+            assert!(
+                resolve(
+                    &format!("[approver]\nprovider='jev'\nprobability_threshold={threshold}"),
+                    Mode::Pi
+                )
+                .is_ok()
+            );
+        }
+    }
 }

@@ -38,10 +38,20 @@ pub(super) async fn call_with_usage(
     let started = std::time::Instant::now();
     let path = config::backend_path().context("Cannot construct backend search PATH")?;
     let operation = args.first().copied().unwrap_or("unknown");
+    let logged_args: Vec<String> = args
+        .iter()
+        .map(|arg| {
+            serde_json::from_str::<serde_json::Value>(arg)
+                .ok()
+                .filter(|v| v.get("authorization").is_some())
+                .map(|v| audit::without_authorization(v).to_string())
+                .unwrap_or_else(|| (*arg).to_owned())
+        })
+        .collect();
     audit::record(
         id,
         "backend_request",
-        json!({"command":program, "args":args, "operation":operation,
+        json!({"command":program, "args":logged_args, "operation":operation,
                 "daemon_pid":std::process::id(),
                 "search_path":std::env::split_paths(&path).collect::<Vec<_>>(),
                 "fallback_directory":config::home().join(".gemini/antigravity-cli/bin")}),

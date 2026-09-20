@@ -53,6 +53,8 @@ fn relevant(key: &str) -> bool {
                 | "ANY_AUTO_MODEL"
                 | "ANY_AUTO_CLI_MODEL"
                 | "ANY_AUTO_PROMPT"
+                | "ANY_AUTO_BASE_URL"
+                | "ANY_AUTO_API_KEY"
         )
         || key.ends_with("_API_KEY")
         || key.ends_with("_AUTH_TOKEN")
@@ -65,9 +67,6 @@ impl RequestContext {
         let config = config::reviewer_config()?;
         if config.approver.provider != config::Provider::Agentapi {
             environment.retain(|k, _| !k.starts_with("ANTIGRAVITY_"));
-        }
-        if let Ok(value) = std::env::var(&config.approver.api_key_env) {
-            environment.insert(config.approver.api_key_env, value);
         }
         Ok(Self {
             mode: config::mode(),

@@ -1,9 +1,32 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 
 // The installer replaces this literal with the absolute executable path.
 const executable = "any-auto";
+
+// The active branch supplies user-origin evidence, never assistant summaries.
+function authorizationContext(ctx: ExtensionContext) {
+  const unavailable = { availability: "unavailable", latest_user_message: null, relevant_prior_messages: [] };
+  try {
+    const messages: { id: string; role: "user"; text: string; source: string }[] = [];
+    let truncated = false;
+    let bytes = 0;
+    for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
+      if (entry.type === "compaction" || entry.type === "branch_summary") truncated = true;
+      if (entry.type !== "message" || entry.message.role !== "user") continue;
+      const content = entry.message.content;
+      const text = typeof content === "string" ? content : content.filter((part) => part.type === "text").map((part) => part.text).join("\n");
+      if (Array.isArray(content) && content.some((part) => part.type !== "text")) truncated = true;
+      bytes += Buffer.byteLength(text, "utf8");
+      if (bytes > 12 * 1024 || messages.length >= 32) { truncated = true; break; }
+      if (!text.trim()) { truncated = true; continue; }
+      messages.push({ id: entry.id, role: "user", text, source: "current_branch" });
+    }
+    if (messages.length === 0) return unavailable;
+    return { availability: truncated ? "truncated" : "available", latest_user_message: messages[0], relevant_prior_messages: messages.slice(1).reverse() };
+  } catch { return unavailable; }
+}
 
 export default function (pi: ExtensionAPI) {
   let branch = "";
@@ -27,6 +50,7 @@ export default function (pi: ExtensionAPI) {
       conversationId: session,
       toolCall: { name: event.toolName, args: event.input },
       workspacePaths: [ctx.cwd],
+      authorization: authorizationContext(ctx),
     };
     try {
       const response = await new Promise<any>((resolve, reject) => {
