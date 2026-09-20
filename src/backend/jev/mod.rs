@@ -128,7 +128,7 @@ fn decision(response: &Response, input: &ReviewInput, threshold: f64) -> Assessm
         ),
         error_stage: None,
         reviewer: Some(json!({"model":response.model, "answers":a,
-            "probability_threshold":threshold,"rule_id":rule,"rubric_version":"jev-review-v1","decision_policy_version":"jev-decision-v2"})),
+            "probability_threshold":threshold,"rule_id":rule,"rubric_version":"jev-review-v2","decision_policy_version":"jev-decision-v2"})),
     }
 }
 

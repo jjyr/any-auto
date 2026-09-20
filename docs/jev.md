@@ -141,6 +141,14 @@ arguments or custom instructions.
 The API's confidence statistic is recorded for diagnostics, not used as a second
 hidden threshold.
 
+The built-in risk rubric classifies ordinary local directory/file reads and
+routine project formatting, linting, type checking, builds, and tests as low risk.
+Expected formatting edits, build artifacts, caches, and temporary test files do
+not increase the risk category. Neither a project `cd ... &&` prefix nor `2>&1`
+alone increases risk. Higher classifications require concrete additional effects;
+missing implementation details of a recognizable development tool are not enough.
+This rubric is identified as `jev-review-v2`; the probability gates are unchanged.
+
 Rules are applied in order:
 
 1. Existing local hard rules and circuit breaker behavior still apply. Shell
