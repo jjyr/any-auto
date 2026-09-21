@@ -125,15 +125,14 @@ Logs work without a running daemon and may contain tool arguments and assessment
 text. They do not log authentication headers or complete process environments.
 File permissions are 0600. There is no automatic retention cleanup.
 
-Jev detail records include `approval_checks` (selected class, acceptance probability,
-threshold and pass/fail) and `failed_checks`. For selected low risk, the acceptance
-probabilities are `P(low)` for risk and
-`P(high) + P(medium)` for authorization. For selected medium risk, they are
-`P(low) + P(medium)` for risk and `P(high)` for authorization, with authorization
-required to be high. Policy must be permitted in both cases. The API's
-`confidence` statistic is diagnostic only.
-The one-line reason also lists failed checks. Class requirements still apply even
-when a probability meets the threshold.
+All backend detail records include the typed judgment, approval_checks,
+failed_checks, and decision_policy_version. Without probabilities, probability
+and threshold diagnostics are null; classification and completeness gates still
+apply. With probabilities, the routine route requires P(low)+P(medium), while
+the authorized route requires P(low)+P(medium)+P(high) and authorization
+P(high)+P(medium). Both require permitted policy and P(permitted). The API's
+confidence statistic is diagnostic only. See [shared policy](review-policy.md).
+
 
 `reviewer_input.authorization_diagnostics` records received and normalized message
 IDs, sources, counts and UTF-8 byte lengths, without message text. It reports the

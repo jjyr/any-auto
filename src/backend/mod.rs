@@ -24,7 +24,7 @@ pub trait SessionTransport: Send + Sync {
 }
 
 pub type ReviewFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<crate::reviewer::Assessment>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<crate::policy::Review>> + Send + 'a>>;
 pub trait Backend: Send + Sync {
     fn review<'a>(&'a mut self, input: &'a crate::reviewer::ReviewInput) -> ReviewFuture<'a>;
     fn conversation_id(&self) -> Option<&str> {

@@ -40,10 +40,21 @@ Antigravity / Pi
            | no
      Persistent daemon
            |
-     Configured reviewer     -------------> Allow / Deny
+     Configured reviewer: Pi / agy / Jev
+           |
+     Typed judgment (risk, authorization, policy)
+           |
+     Shared policy + optional probability gate --> Allow / Deny
            |
      Error or timeout -----------------> Deny
 ```
+
+Pi/agy use the [conversational prompt](src/prompts/prompt.txt); Jev uses
+[Choice questions](src/prompts/questions.json).
+Models supply classifications; [the shared policy](src/policy/mod.rs) computes
+the final outcome. Pi/agy JSON is parsed into typed enums, not accepted as a model
+allow/deny decision. Jev supplies probability distributions; other reviewers do
+not need them. See [the contract and migration notes](docs/review-policy.md).
 
 Conversational backends maintain a separate reviewer session for each user conversation, allowing the model service
 to reuse KV/prompt caches for shared context. Cache hits can reduce repeated

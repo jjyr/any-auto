@@ -1,7 +1,7 @@
 use any_auto::{
     parser,
     pipeline::{Breaker, blacklist, read_only},
-    reviewer::parse,
+    policy::parse,
 };
 use serde_json::json;
 
@@ -106,17 +106,12 @@ fn tolerant_review_fails_closed() {
         "{}",
         "{\"outcome\":\"maybe\"}",
     ] {
-        assert_eq!(parse(raw).outcome, "deny");
+        assert!(parse(raw).is_err());
     }
-    assert_eq!(
-        parse("text ```json\n{\"outcome\":\"allow\"}\n``` trailing").outcome,
-        "allow"
-    );
-    assert_eq!(
-        parse("prefix {\"decision\":\" ALLOW \"} suffix").risk_level,
-        "low"
-    );
-    assert_eq!(parse("{\"outcome\":\"force_ask\"}").outcome, "deny");
+    let raw = r#"text ```json
+{"risk":"low","authorization":"medium","policy":"permitted","rationale":"test"}
+``` trailing"#;
+    assert_eq!(parse(raw).unwrap().risk, any_auto::policy::Risk::Low);
 }
 #[test]
 fn breaker_persistence_and_window() {
@@ -144,30 +139,15 @@ fn breaker_persistence_and_window() {
 }
 
 #[test]
-fn invalid_outcome_cannot_fall_back_to_allow() {
-    for invalid in [
+fn outcome_aliases_cannot_replace_structured_judgments() {
+    for value in [
         json!(42),
         json!(true),
-        json!(["allow"]),
-        json!({"value":"allow"}),
-    ] {
-        assert_eq!(
-            parse(&json!({"outcome":invalid,"decision":"allow"}).to_string()).outcome,
-            "deny"
-        );
-    }
-    for absent in [
         json!(null),
-        json!(false),
-        json!(0),
-        json!(""),
+        json!("allow"),
         json!([]),
-        json!({}),
     ] {
-        assert_eq!(
-            parse(&json!({"outcome":absent,"decision":"allow"}).to_string()).outcome,
-            "allow"
-        );
+        assert!(parse(&json!({"outcome":value,"decision":"allow"}).to_string()).is_err());
     }
 }
 
@@ -234,14 +214,10 @@ fn shell_syntax_regressions() {
 }
 
 #[test]
-fn backend_decisions_are_binary_and_cannot_request_human_override() {
-    for outcome in ["ask", "force_ask", "unknown"] {
+fn backends_cannot_request_human_override() {
+    for outcome in ["allow", "deny", "ask", "force_ask", "unknown"] {
         for field in ["outcome", "decision"] {
-            assert_eq!(parse(&json!({field:outcome}).to_string()).outcome, "deny");
+            assert!(parse(&json!({field:outcome}).to_string()).is_err());
         }
-        assert_eq!(
-            parse(&json!({"outcome":outcome,"decision":"allow"}).to_string()).outcome,
-            "deny"
-        );
     }
 }

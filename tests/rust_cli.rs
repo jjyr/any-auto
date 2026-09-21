@@ -1,3 +1,4 @@
+mod support;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -72,7 +73,7 @@ impl Drop for Sandbox {
     }
 }
 fn payload(command: &str) -> String {
-    json!({"conversationId":"test", "toolCall":{"name":"run_command","args":{"CommandLine":command}}, "workspacePaths":[]}).to_string()
+    json!({"conversationId":"test", "authorization":support::authorization(),"toolCall":{"name":"run_command","args":{"CommandLine":command}}, "workspacePaths":[]}).to_string()
 }
 
 #[test]
@@ -85,7 +86,7 @@ fn agentapi_cli_fallback_preserves_agent_path_priority() {
             r#"
 case "$1" in
   new-conversation) echo '{"conversationId":"fallback"}';;
-  send-message) echo '{"outcome":"allow","rationale":"CLI fallback"}';;
+  send-message) echo '{"risk":"low","authorization":"high","policy":"permitted","rationale":"CLI fallback"}';;
 esac
 "#,
         );
@@ -95,12 +96,12 @@ esac
                 r#"
 case "$1" in
   new-conversation) echo '{"conversationId":"agent"}';;
-  send-message) echo '{"outcome":"deny","rationale":"agent reviewer decision"}';;
+  send-message) echo '{"risk":"low","authorization":"high","policy":"prohibited","rationale":"agent reviewer decision"}';;
 esac
 "#,
             );
         }
-        let input = json!({"conversationId":"path-test", "toolCall":{
+        let input = json!({"conversationId":"path-test", "authorization":support::authorization(),"toolCall":{
             "name":"run_command", "args":{"CommandLine":"git status", "Cwd":"/tmp/work space"}}});
         let output = s.hook(&input.to_string());
         assert_eq!(
@@ -194,7 +195,7 @@ fn missing_agentapi_logs_search_context_and_infrastructure_failure() {
 fn lifecycle_auto_spawn_fail_closed_and_breaker() {
     let s = Sandbox::new();
     assert!(!s.run(&["daemon", "status"]).status.success());
-    let out = s.hook(&json!({"toolCall":{"name":"view_file","args":{}}}).to_string());
+    let out = s.hook(&json!({"authorization":support::authorization(),"toolCall":{"name":"view_file","args":{}}}).to_string());
     assert_eq!(out["decision"], "allow");
     assert!(!s.socket.exists());
     assert_eq!(s.hook(&payload("echo $(rm -rf /)"))["decision"], "deny");
@@ -219,7 +220,7 @@ fn session_reuse_and_cached_session_recovery() {
     s.mock(r#"
 case "$1" in
   new-conversation) echo new >> "$HOME/calls"; echo '{"conversationId":"fresh"}';;
-  send-message) echo send >> "$HOME/calls"; if [ "$2" = expired ]; then exit 1; fi; printf '%s\n' '{"response":"```json\n{\"outcome\":\"allow\"}\n```"}';;
+  send-message) echo send >> "$HOME/calls"; if [ "$2" = expired ]; then exit 1; fi; printf '%s\n' '{"response":"```json\n{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"Fixture assessment\"}\n```"}';;
 esac
 "#);
     assert_eq!(s.hook(&payload("git status"))["decision"], "allow");
@@ -315,7 +316,7 @@ fn concurrent_starts_and_status_during_review() {
         r#"
 case "$1" in
   new-conversation) echo '{"conversationId":"shared"}';;
-  send-message) /bin/sleep 1; echo '{"outcome":"allow"}';;
+  send-message) /bin/sleep 1; echo '{"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture assessment"}';;
 esac
 "#,
     );
@@ -376,7 +377,11 @@ fn prompt_precedence_and_script_inspection() {
         let s = Sandbox::new();
         let global = s.dir.path().join(".config/any-auto");
         fs::create_dir_all(&global).unwrap();
-        fs::write(global.join("config.toml"), "prompt = 'global'").unwrap();
+        fs::write(
+            global.join("config.toml"),
+            "prompt = 'global'\n[approver]\nprovider = 'agentapi'\n",
+        )
+        .unwrap();
         if workspace {
             fs::create_dir_all(s.dir.path().join(".agents")).unwrap();
             fs::write(
@@ -389,7 +394,7 @@ fn prompt_precedence_and_script_inspection() {
             r#"
 case "$1" in
   new-conversation) printf '%s' "$3" > "$HOME/prompt"; echo '{"conversationId":"fresh"}';;
-  send-message) printf '%s' "$3" > "$HOME/action"; echo '{"outcome":"allow"}';;
+  send-message) printf '%s' "$3" > "$HOME/action"; echo '{"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture assessment"}';;
 esac
 "#,
         );
@@ -466,7 +471,7 @@ fn non_string_agentapi_response_fails_closed() {
         r#"
 case "$1" in
   new-conversation) echo '{"conversationId":"fresh"}';;
-  send-message) echo '{"response":{"outcome":"allow"}}';;
+  send-message) echo '{"response":{"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture assessment"}}';;
 esac
 "#,
     );
@@ -479,13 +484,13 @@ fn logs_contains_full_review_trace_and_filters() {
     s.mock(r#"
 case "$1" in
   new-conversation) echo '{"conversationId":"history-session"}';;
-  send-message) printf '%s\n' '{"response":"{\"outcome\":\"allow\",\"risk_level\":\"low\",\"user_authorization\":\"high\",\"rationale\":\"User requested a test run\"}"}';;
+  send-message) printf '%s\n' '{"response":"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"User requested a test run\"}"}';;
 esac
 "#);
     let input = payload("cargo test --locked");
     let output = s.hook(&input);
     assert_eq!(output["decision"], "allow");
-    let readonly = json!({"conversationId":"readonly", "toolCall":{"name":"view_file","args":{"AbsolutePath":"/tmp/example"}}});
+    let readonly = json!({"conversationId":"readonly", "authorization":support::authorization(),"toolCall":{"name":"view_file","args":{"AbsolutePath":"/tmp/example"}}});
     s.hook(&readonly.to_string());
     assert!(s.run(&["daemon", "stop"]).status.success());
     let list = s.run(&[
@@ -508,10 +513,11 @@ esac
     let trace: Value = serde_json::from_slice(&detail.stdout).unwrap();
     let events = trace["events"].as_array().unwrap();
     assert_eq!(events[0]["event"], "hook_input");
-    assert_eq!(
-        events[0]["data"]["input"],
-        serde_json::from_str::<Value>(&input).unwrap()
-    );
+    assert_eq!(events[0]["data"]["input"], {
+        let mut expected: Value = serde_json::from_str(&input).unwrap();
+        expected["authorization"] = json!({"availability":"available","content":"[not logged]"});
+        expected
+    });
     assert_eq!(events.last().unwrap()["data"]["output"], output);
     assert!(
         events
@@ -560,7 +566,9 @@ fn logs_records_failures_and_concurrent_hooks() {
         serde_json::from_slice::<Value>(&s.run(&["logs", "--no-group", "--json"]).stdout).unwrap(),
         json!([])
     );
-    let input = json!({"toolCall":{"name":"view_file","args":{}}}).to_string();
+    let input =
+        json!({"authorization":support::authorization(),"toolCall":{"name":"view_file","args":{}}})
+            .to_string();
     let mut children = Vec::new();
     for _ in 0..12 {
         let mut child = s
@@ -704,7 +712,9 @@ impl Drop for LogFollower {
 #[test]
 fn logs_follow_snapshot_filters_partial_lines_and_rotation() {
     let s = Sandbox::new();
-    let readonly = json!({"toolCall":{"name":"view_file","args":{}}}).to_string();
+    let readonly =
+        json!({"authorization":support::authorization(),"toolCall":{"name":"view_file","args":{}}})
+            .to_string();
     s.hook(&readonly);
     s.hook(&readonly);
     let latest: Value = serde_json::from_slice(
@@ -776,7 +786,7 @@ fn concurrent_reviews_share_session_across_daemon_restart() {
         r#"
 case "$1" in
   new-conversation) echo new >> "$HOME/calls"; echo '{"conversationId":"persistent"}';;
-  send-message) echo send >> "$HOME/calls"; echo '{"outcome":"allow"}';;
+  send-message) echo send >> "$HOME/calls"; echo '{"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture assessment"}';;
 esac
 "#,
     );
@@ -859,10 +869,10 @@ fn global_config_edit_and_precedence() {
     let out = s.run(&["config", "--json"]);
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(value["reviewer"]["model"].is_null());
+    assert!(value["reviewer"]["approver"]["model"].is_null());
     assert!(!s.dir.path().join(".config/any-auto").exists());
     let editor = s.dir.path().join("editor with spaces");
-    fs::write(&editor, "#!/bin/sh\n[ \"$1\" = --wait ] || exit 5\nprintf 'model = \"pro\"\nprompt = \"custom prompt\"\n' > \"$2\"\n").unwrap();
+    fs::write(&editor, "#!/bin/sh\n[ \"$1\" = --wait ] || exit 5\nprintf 'prompt = \"custom prompt\"\n[approver]\nprovider = \"agentapi\"\n' > \"$2\"\n").unwrap();
     fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
     let out = s
         .command()
@@ -879,12 +889,15 @@ fn global_config_edit_and_precedence() {
     let out = s
         .command()
         .args(["config", "--json"])
-        .env("ANY_AUTO_MODEL", "flash")
+        .env("ANY_AUTO_APPROVER_MODEL", "flash")
         .output()
         .unwrap();
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(value["reviewer"]["model"], "flash");
-    assert_eq!(value["reviewer"]["model_source"], "ANY_AUTO_MODEL");
+    assert_eq!(value["reviewer"]["approver"]["model"], "flash");
+    assert_eq!(
+        value["reviewer"]["approver_sources"]["model"],
+        "ANY_AUTO_APPROVER_MODEL"
+    );
     assert_eq!(value["reviewer"]["prompt"], "custom prompt");
     assert!(!s.run(&["config", "--local"]).status.success());
     assert!(!s.run(&["config", "--edit", "--json"]).status.success());
@@ -913,7 +926,7 @@ fn reset_clears_session_and_applies_model_and_prompt() {
         r#"
 case "$1" in
   new-conversation) printf '%s\n' "$@" >> "$HOME/created"; echo '{"conversationId":"reviewer"}';;
-  send-message) echo '{"outcome":"allow"}';;
+  send-message) echo '{"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture assessment"}';;
 esac
 "#,
     );
@@ -941,14 +954,17 @@ esac
     fs::create_dir_all(s.dir.path().join(".config/any-auto")).unwrap();
     fs::write(
         s.dir.path().join(".config/any-auto/config.toml"),
-        "model = 'pro'\nprompt = 'new prompt'\n",
+        "prompt = 'new prompt'\n[approver]\nprovider = 'agentapi'\nmodel = 'pro'\n",
     )
     .unwrap();
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
     let changed = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert_eq!(
         &changed[before.len()..],
-        "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
+        format!(
+            "new-conversation\n--title=Guardian Approver Session\n--model=pro\n{}\n",
+            "new prompt"
+        )
     );
     assert!(s.run(&["daemon", "stop"]).status.success());
     assert_eq!(s.hook(&payload("cargo test"))["decision"], "allow");
@@ -961,7 +977,10 @@ esac
     let after = fs::read_to_string(s.dir.path().join("created")).unwrap();
     assert_eq!(
         &after[changed.len()..],
-        "new-conversation\n--title=Guardian Approver Session\n--model=pro\nnew prompt\n"
+        format!(
+            "new-conversation\n--title=Guardian Approver Session\n--model=pro\n{}\n",
+            "new prompt"
+        )
     );
     fs::write(
         s.dir.path().join(".config/any-auto/config.toml"),
@@ -986,10 +1005,10 @@ fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
     let out = s.run(&["config", "--json"]);
     assert!(out.status.success());
     let value: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert!(value["reviewer"]["model"].is_null());
+    assert!(value["reviewer"]["approver"]["model"].is_null());
     assert_eq!(
         value["reviewer"]["prompt"],
-        include_str!("../src/prompt.txt")
+        any_auto::prompts::DEFAULT_CONVERSATIONAL_PROMPT
     );
     assert_eq!(value["reviewer"]["prompt_source"], "default");
     let out = s
@@ -1003,4 +1022,34 @@ fn old_global_text_files_are_ignored_when_reading_and_creating_config() {
         toml::from_str(&fs::read_to_string(global.join("config.toml")).unwrap()).unwrap();
     assert!(file.get("model").is_none());
     assert!(file.get("prompt").is_none());
+}
+
+#[test]
+fn legacy_model_settings_are_rejected_even_with_new_overrides() {
+    let s = Sandbox::new();
+    for variable in ["ANY_AUTO_MODEL", "ANY_AUTO_CLI_MODEL"] {
+        for value in ["", "pro"] {
+            let out = s
+                .command()
+                .args(["config", "--json"])
+                .env(variable, value)
+                .env("ANY_AUTO_APPROVER_MODEL", "flash")
+                .output()
+                .unwrap();
+            assert!(!out.status.success());
+            let error = String::from_utf8_lossy(&out.stderr);
+            assert!(error.contains(variable), "{error}");
+            assert!(error.contains("ANY_AUTO_APPROVER_MODEL"), "{error}");
+        }
+    }
+    for field in ["model", "cli_model"] {
+        for value in ["", "pro"] {
+            let text = format!("{field} = '{value}'\n[approver]\nmodel = 'flash'\n");
+            let error = any_auto::config::validate_text(&text)
+                .unwrap_err()
+                .to_string();
+            assert!(error.contains(field), "{error}");
+            assert!(error.contains("[approver].model"), "{error}");
+        }
+    }
 }

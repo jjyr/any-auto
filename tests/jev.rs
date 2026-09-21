@@ -704,7 +704,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
             .contains("Circuit breaker")
     );
     assert_eq!(worker.join().unwrap().len(), 3);
-    assert!(h.logs().contains("jev-decision-v5"));
+    assert!(h.logs().contains("policy-decision-v6"));
 }
 
 #[test]
@@ -1052,7 +1052,7 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     let candidate = h.root.path().join("candidate.json");
     let questions = h.root.path().join("questions.json");
     let mut rubric: Value =
-        serde_json::from_str(include_str!("../src/backend/jev/questions.json")).unwrap();
+        serde_json::from_str(include_str!("../src/prompts/questions.json")).unwrap();
     rubric["authorization"]["instructions"] = json!("Candidate authorization instruction");
     fs::write(&questions, rubric.to_string()).unwrap();
     let base_args = [
@@ -1138,8 +1138,11 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     assert!(second["comparison"]["elapsed_ms_delta"].is_number());
     assert_eq!(second["summary"]["input_tokens"], 40);
     assert_eq!(second["summary"]["http_attempts"], 2);
-    assert_eq!(second["decision_policy_version"], "jev-decision-v5");
+    assert_eq!(second["decision_policy_version"], "policy-decision-v6");
     assert_ne!(first["questions_hash"], second["questions_hash"]);
+    assert!(second["questions"].is_object());
+    assert!(second.get("prompt").is_none());
+    assert!(second.get("prompt_hash").is_none());
     assert!(!second.to_string().contains("fixture-key"));
     let incompatible_output = h.root.path().join("incompatible.json");
     let out = h
@@ -1276,12 +1279,16 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut buffer = [0u8; 1];
-        stream.read_exact(&mut buffer).unwrap();
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buffer = [0u8; 1];
+            stream.read_exact(&mut buffer).unwrap();
+            streams.push(stream);
+        }
         ready_tx.send(()).unwrap();
         let _ = stop_rx.recv_timeout(Duration::from_secs(5));
     });
@@ -1298,6 +1305,8 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
             "reviewer-eval",
             "--agent",
             "pi",
+            "--concurrency",
+            "2",
             "--suite",
             suite.to_str().unwrap(),
             "--output",
@@ -1321,9 +1330,9 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
     assert!(!out.status.success());
     let result: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(result["completed"], false);
-    assert_eq!(result["summary"]["http_attempts"], 1);
-    assert_eq!(result["summary"]["errors"], 1);
-    assert_eq!(result["trials"].as_array().unwrap().len(), 1);
+    assert_eq!(result["summary"]["http_attempts"], 2);
+    assert_eq!(result["summary"]["errors"], 2);
+    assert_eq!(result["trials"].as_array().unwrap().len(), 2);
     assert!(!h.root.path().join("logs").exists());
 }
 

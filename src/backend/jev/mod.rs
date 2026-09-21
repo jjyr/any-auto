@@ -1,37 +1,17 @@
-//! Structured judgments mapped to the same Assessment as conversational backends.
+//! TypeSafe wire validation and normalization into the shared Judgment contract.
 pub(crate) mod client;
 use super::{Backend, ReviewFuture};
-use crate::{
-    audit,
-    config::{JevInstructions, ReviewerConfig},
-    reviewer::{Assessment, ReviewInput},
-};
+use crate::{audit, config::ReviewerConfig, reviewer::ReviewInput};
+#[cfg(test)]
+use crate::{config::JevInstructions, policy, reviewer::Assessment};
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, time::Instant};
 
-pub(crate) const RUBRIC_VERSION: &str = "jev-review-v5";
-pub(crate) const DECISION_POLICY_VERSION: &str = "jev-decision-v5";
-
-const RISK: &[&str] = &["low", "medium", "high", "critical", "unknown"];
-const AUTH: &[&str] = &["high", "medium", "low", "unknown"];
-const POLICY: &[&str] = &["permitted", "prohibited", "needs_confirmation", "unknown"];
-
-pub(crate) fn questions(custom: &JevInstructions) -> Value {
-    let mut questions: Value =
-        serde_json::from_str(include_str!("questions.json")).expect("built-in questions");
-    for (name, replacement) in [
-        ("risk", &custom.risk),
-        ("authorization", &custom.authorization),
-        ("policy", &custom.policy),
-    ] {
-        if let Some(value) = replacement {
-            questions[name]["instructions"] = json!(value);
-        }
-    }
-    questions
-}
+use crate::policy::RUBRIC_VERSION;
+use crate::policy::{AUTH, Judgment, POLICY, Probabilities, RISK, Review};
+use crate::prompts::jev_questions as questions;
 #[derive(Deserialize, Serialize)]
 struct Choice {
     #[serde(rename = "type")]
@@ -99,87 +79,23 @@ fn parse(value: Value) -> Result<Response> {
     response.answers.policy.validate(POLICY)?;
     Ok(response)
 }
-fn approval_checks(a: &Answers, input: &ReviewInput, threshold: f64) -> Value {
-    // Codex-style authorization: low/medium need no authorization gate;
-    // high requires at least medium authorization and a permitted, bounded action.
-    // Probability mass may span risk classes allowed by the same route.
-    let routine_allowed = matches!(a.risk.choice.as_str(), "low" | "medium")
-        && a.risk.p("low") + a.risk.p("medium") >= threshold;
-    let authorization_required = !routine_allowed;
-    let risk_choices = if authorization_required {
-        vec!["low", "medium", "high"]
-    } else {
-        vec!["low", "medium"]
-    };
-    let auth_choices = if authorization_required {
-        vec!["high", "medium"]
-    } else {
-        vec!["high", "medium", "low", "unknown"]
-    };
-    let risk_probability = risk_choices.iter().map(|key| a.risk.p(key)).sum::<f64>();
-    let auth_probability = auth_choices
-        .iter()
-        .map(|key| a.authorization.p(key))
-        .sum::<f64>();
-    json!({
-        "evidence": {"passed": input.complete()},
-        "risk": {"passed": risk_choices.contains(&a.risk.choice.as_str()) && risk_probability >= threshold,
-            "accepted_choices":risk_choices, "choice": a.risk.choice, "probability": risk_probability, "threshold": threshold},
-        "authorization": {"passed": !authorization_required || (auth_choices.contains(&a.authorization.choice.as_str()) && auth_probability >= threshold),
-            "required": authorization_required, "accepted_choices":auth_choices, "choice": a.authorization.choice,
-            "probability": auth_probability, "threshold": threshold},
-        "policy": {"passed": a.policy.choice == "permitted" && a.policy.p("permitted") >= threshold,
-            "accepted_choices":["permitted"], "choice": a.policy.choice, "probability": a.policy.p("permitted"), "threshold": threshold}
+fn into_review(response: &Response) -> Result<Review> {
+    let a = &response.answers;
+    let judgment: Judgment = serde_json::from_value(json!({
+        "risk": a.risk.choice, "authorization": a.authorization.choice,
+        "policy": a.policy.choice, "rationale": "Jev structured classification",
+        "probabilities": Probabilities { risk: a.risk.probabilities.clone(),
+            authorization: a.authorization.probabilities.clone(), policy: a.policy.probabilities.clone() }
+    }))?;
+    judgment.validate()?;
+    Ok(Review {
+        judgment,
+        metadata: json!({"model":response.model,"answers":a,"rubric_version":RUBRIC_VERSION}),
     })
 }
+#[cfg(test)]
 fn decision(response: &Response, input: &ReviewInput, threshold: f64) -> Assessment {
-    let a = &response.answers;
-    let checks = approval_checks(a, input, threshold);
-    let (outcome, rule) = if a.policy.choice == "prohibited" || a.risk.choice == "critical" {
-        ("deny", "prohibited_or_critical")
-    } else if !input.complete() {
-        ("deny", "incomplete_evidence")
-    } else if ["risk", "authorization", "policy"]
-        .iter()
-        .all(|key| checks[*key]["passed"] == true)
-    {
-        ("allow", "approval_thresholds_met")
-    } else {
-        ("deny", "confirmation_or_uncertainty")
-    };
-    let failed: Vec<_> = ["evidence", "risk", "authorization", "policy"]
-        .into_iter()
-        .filter(|key| checks[*key]["passed"] == false)
-        .collect();
-    let failures = failed
-        .iter()
-        .map(|key| {
-            let check = &checks[*key];
-            if *key == "evidence" {
-                "evidence incomplete".to_owned()
-            } else {
-                format!(
-                    "{key}(choice={}, probability={:.4}, required>={threshold}, accepted_choices={})",
-                    check["choice"].as_str().unwrap(),
-                    check["probability"].as_f64().unwrap(),
-                    check["accepted_choices"]
-                )
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    Assessment {
-        outcome: outcome.into(),
-        risk_level: a.risk.choice.clone(),
-        user_authorization: a.authorization.choice.clone(),
-        rationale: format!(
-            "Jev: {outcome}; rule={rule}; risk={}, authorization={}, policy={}, probability threshold={threshold}; failed_checks=[{failures}].",
-            a.risk.choice, a.authorization.choice, a.policy.choice
-        ),
-        error_stage: None,
-        reviewer: Some(json!({"model":response.model, "answers":a,
-            "probability_threshold":threshold,"approval_checks":checks,"failed_checks":failed,"rule_id":rule,"rubric_version":RUBRIC_VERSION,"decision_policy_version":DECISION_POLICY_VERSION})),
-    }
+    policy::decide(into_review(response).unwrap(), input, threshold)
 }
 
 pub struct JevBackend {
@@ -206,7 +122,7 @@ impl JevBackend {
         backend.client.collect_usage = true;
         Ok(backend)
     }
-    async fn evaluate(&self, input: &ReviewInput) -> Result<Assessment> {
+    async fn evaluate(&self, input: &ReviewInput) -> Result<Review> {
         let key = &self.config.approver.api_key;
         ensure!(!key.trim().is_empty(), "Jev API key is empty");
         let questions = self
@@ -250,12 +166,12 @@ impl JevBackend {
             json!({"provider":"jev","model":response.model,
             "usage_delta":tokens,"usage_valid":!tokens.is_null(),"exit_code":0,"duration_ms":started.elapsed().as_millis()}),
         );
-        let mut result = decision(&response, input, self.config.approver.probability_threshold);
+        let mut result = into_review(&response)?;
         if self.evaluation_questions.is_some() {
-            result.reviewer.as_mut().unwrap()["rubric_version"] = json!("evaluation");
+            result.metadata["rubric_version"] = json!("evaluation");
         }
         use sha2::{Digest, Sha256};
-        result.reviewer.as_mut().unwrap()["rubric_hash"] = json!(format!(
+        result.metadata["rubric_hash"] = json!(format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(&questions)?)
         ));
