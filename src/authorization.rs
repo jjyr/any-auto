@@ -181,13 +181,11 @@ mod tests {
             json!({"step_index":step,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","content":text}).to_string()
         };
         let latest = entry(4, "Latest request");
-        for old in ["malformed older history"] {
-            let (_dir, payload) = fixture(&format!("{old}\n{latest}"));
-            let auth = from_agy_hook(&payload);
-            assert_eq!(auth["availability"], "available");
-            assert_eq!(auth["latest_user_message"]["text"], "Latest request");
-            assert_eq!(auth["relevant_prior_messages"], json!([]));
-        }
+        let (_dir, payload) = fixture(&format!("malformed older history\n{latest}"));
+        let auth = from_agy_hook(&payload);
+        assert_eq!(auth["availability"], "available");
+        assert_eq!(auth["latest_user_message"]["text"], "Latest request");
+        assert_eq!(auth["relevant_prior_messages"], json!([]));
         // Collectors forward complete history, including large escaped messages.
         let (_dir, payload) = fixture(&format!("{}\n{latest}", entry(1, &"\"".repeat(9000))));
         let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
