@@ -224,10 +224,6 @@ impl JevBackend {
             .unwrap_or_else(|| questions(&self.config.approver.instructions));
         let body =
             json!({"model":self.config.approver.model,"state":input.state,"questions":questions});
-        ensure!(
-            serde_json::to_vec(&body)?.len() <= 24 * 1024,
-            "Jev request exceeds 24 KiB evidence budget"
-        );
         audit::record(
             &input.request_id,
             "jev_rubric",

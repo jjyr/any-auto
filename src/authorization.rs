@@ -1,15 +1,15 @@
 //! Collect user-origin evidence from the transcript supplied by an agy hook.
 use serde_json::{Value, json};
-use std::{fs::File, io::Read, path::Path};
+use std::{
+    fs::File,
+    io::{Read, Seek, SeekFrom},
+    path::Path,
+};
 
 const TRANSCRIPT_LIMIT: u64 = 4 * 1024 * 1024;
-const TEXT_LIMIT: usize = 12 * 1024;
 const USER_MESSAGE_LIMIT: usize = 5;
 fn unavailable() -> Value {
     json!({"availability":"unavailable","latest_user_message":null,"relevant_prior_messages":[]})
-}
-fn truncated() -> Value {
-    json!({"availability":"truncated","latest_user_message":null,"relevant_prior_messages":[]})
 }
 
 #[cfg(test)]
@@ -18,7 +18,7 @@ pub(crate) fn from_agy_hook(payload: &Value) -> Value {
 }
 pub(crate) fn from_agy_hook_with_diagnostics(payload: &Value) -> (Value, Value) {
     let mut diagnostics = json!({"source":"agy_transcript", "message_limit":USER_MESSAGE_LIMIT,
-        "text_byte_limit":TEXT_LIMIT,"transcript_byte_limit":TRANSCRIPT_LIMIT});
+        "transcript_byte_limit":TRANSCRIPT_LIMIT});
     let auth = collect(payload, &mut diagnostics).unwrap_or_else(unavailable);
     diagnostics["availability"] = auth["availability"].clone();
     (auth, diagnostics)
@@ -38,21 +38,23 @@ fn collect(payload: &Value, diagnostics: &mut Value) -> Option<Value> {
     if path != expected {
         return None;
     }
+    // Read the tail: old transcript growth must not hide the latest user request.
+    let mut file = File::open(path).ok()?;
+    let length = file.metadata().ok()?.len();
+    let offset = length.saturating_sub(TRANSCRIPT_LIMIT);
+    file.seek(SeekFrom::Start(offset)).ok()?;
     let mut bytes = Vec::new();
-    File::open(path)
-        .ok()?
-        .take(TRANSCRIPT_LIMIT + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
+    file.take(TRANSCRIPT_LIMIT).read_to_end(&mut bytes).ok()?;
     diagnostics["transcript_bytes_read"] = json!(bytes.len());
-    diagnostics["transcript_bytes_are_lower_bound"] = json!(bytes.len() as u64 > TRANSCRIPT_LIMIT);
-    if bytes.len() as u64 > TRANSCRIPT_LIMIT {
-        diagnostics["limit_reached"] = json!("transcript_bytes");
-        return Some(truncated());
-    }
-    let text = std::str::from_utf8(&bytes).ok()?;
-    let mut messages = Vec::new();
-    let mut total = 0;
+    diagnostics["transcript_tail_used"] = json!(offset > 0);
+    let bytes = if offset > 0 {
+        // Discard the potentially partial first line, including partial UTF-8.
+        &bytes[bytes.iter().position(|byte| *byte == b'\n')? + 1..]
+    } else {
+        &bytes[..]
+    };
+    let text = std::str::from_utf8(bytes).ok()?;
+    let mut messages = Vec::new(); // newest first
     let mut previous_step = None;
     diagnostics["message_window_limit_reached"] = json!(false);
     for line in text.lines().rev().filter(|line| !line.trim().is_empty()) {
@@ -60,34 +62,40 @@ fn collect(payload: &Value, diagnostics: &mut Value) -> Option<Value> {
             diagnostics["message_window_limit_reached"] = json!(true);
             break;
         }
-        let entry: Value = serde_json::from_str(line).ok()?;
-        let step = entry["step_index"].as_u64()?;
-        if step >= current_step {
-            continue;
-        }
-        if entry["type"] != "USER_INPUT" || entry["source"] != "USER_EXPLICIT" {
-            continue;
-        }
-        if entry["status"] != "DONE" || previous_step.is_some_and(|previous| step >= previous) {
-            return None;
-        }
-        previous_step = Some(step);
-        let content = entry["content"].as_str()?;
-        // agy wraps the original request separately from generated metadata/settings.
-        let content = if let Some(rest) = content.strip_prefix("<USER_REQUEST>\n") {
-            rest.split_once("\n</USER_REQUEST>")?.0
-        } else {
-            content
+        let candidate = (|| -> Option<Option<(u64, String)>> {
+            let entry: Value = serde_json::from_str(line).ok()?;
+            let step = entry["step_index"].as_u64()?;
+            if step >= current_step
+                || entry["type"] != "USER_INPUT"
+                || entry["source"] != "USER_EXPLICIT"
+            {
+                return Some(None);
+            }
+            if entry["status"] != "DONE" || previous_step.is_some_and(|previous| step >= previous) {
+                return None;
+            }
+            let content = entry["content"].as_str()?;
+            let content = if let Some(rest) = content.strip_prefix("<USER_REQUEST>\n") {
+                rest.split_once("\n</USER_REQUEST>")?.0
+            } else {
+                content
+            };
+            if content.trim().is_empty() {
+                return None;
+            }
+            Some(Some((step, content.to_owned())))
+        })();
+        let (step, content) = match candidate {
+            Some(Some(candidate)) => candidate,
+            Some(None) => continue,
+            None if !messages.is_empty() => {
+                messages.truncate(1);
+                diagnostics["history_fallback"] = json!("latest_only");
+                break;
+            }
+            None => return None,
         };
-        if content.trim().is_empty() {
-            continue;
-        }
-        total += content.len();
-        diagnostics["candidate_text_bytes"] = json!(total);
-        if total > TEXT_LIMIT {
-            diagnostics["limit_reached"] = json!("text_bytes");
-            return Some(truncated());
-        }
+        previous_step = Some(step);
         messages.push(json!({"id":format!("{conversation}:{step}"),"role":"user","text":content,"source":"agy_transcript"}));
     }
     messages.reverse();
@@ -96,10 +104,6 @@ fn collect(payload: &Value, diagnostics: &mut Value) -> Option<Value> {
     diagnostics["selected_message_count"] =
         json!(result["relevant_prior_messages"].as_array().unwrap().len() + 1);
     diagnostics["selected_serialized_bytes"] = json!(result.to_string().len());
-    if result.to_string().len() > 16 * 1024 {
-        diagnostics["limit_reached"] = json!("serialized_bytes");
-        return Some(truncated());
-    }
     Some(result)
 }
 
@@ -140,7 +144,7 @@ mod tests {
             .map(|step| {
                 json!({
             "step_index":step,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE",
-            "content":if step == 0 { "x".repeat(TEXT_LIMIT + 1) } else { format!("request {step}") }
+            "content":if step == 0 { "x".repeat((24 * 1024) + 1) } else { format!("request {step}") }
         }).to_string()
             })
             .collect::<Vec<_>>()
@@ -163,13 +167,43 @@ mod tests {
         );
     }
     #[test]
-    fn oversized_message_inside_recent_window_is_still_incomplete() {
-        let record = json!({"step_index":1,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","content":"x".repeat(TEXT_LIMIT + 1)});
+    fn oversized_latest_message_is_preserved_in_full() {
+        let record = json!({"step_index":1,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","content":"x".repeat((24 * 1024) + 1)});
         let (_dir, payload) = fixture(&record.to_string());
         let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
-        assert_eq!(auth["availability"], "truncated");
-        assert_eq!(diagnostics["limit_reached"], "text_bytes");
-        assert_eq!(diagnostics["candidate_text_bytes"], TEXT_LIMIT + 1);
+        assert_eq!(auth["availability"], "available");
+        assert_eq!(auth["latest_user_message"]["text"], record["content"]);
+        assert_eq!(diagnostics["selected_message_count"], 1);
+    }
+    #[test]
+    fn history_is_bounded_during_selection_and_failure_keeps_latest() {
+        let entry = |step, text: &str| {
+            json!({"step_index":step,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","content":text}).to_string()
+        };
+        let latest = entry(4, "Latest request");
+        for old in ["malformed older history"] {
+            let (_dir, payload) = fixture(&format!("{old}\n{latest}"));
+            let auth = from_agy_hook(&payload);
+            assert_eq!(auth["availability"], "available");
+            assert_eq!(auth["latest_user_message"]["text"], "Latest request");
+            assert_eq!(auth["relevant_prior_messages"], json!([]));
+        }
+        // Collectors forward complete history, including large escaped messages.
+        let (_dir, payload) = fixture(&format!("{}\n{latest}", entry(1, &"\"".repeat(9000))));
+        let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
+        assert_eq!(auth["availability"], "available");
+        assert_eq!(
+            auth["relevant_prior_messages"][0]["text"],
+            "\"".repeat(9000)
+        );
+        assert_eq!(diagnostics["selected_message_count"], 2);
+        let (_dir, payload) = fixture(&format!(
+            "{}\n{latest}",
+            "x".repeat(TRANSCRIPT_LIMIT as usize)
+        ));
+        let (auth, diagnostics) = from_agy_hook_with_diagnostics(&payload);
+        assert_eq!(auth["latest_user_message"]["text"], "Latest request");
+        assert_eq!(diagnostics["transcript_tail_used"], true);
     }
     #[test]
     fn malformed_missing_foreign_and_oversized_transcripts_never_supply_authorization() {

@@ -137,8 +137,10 @@ when a probability meets the threshold.
 
 `reviewer_input.authorization_diagnostics` records received and normalized message
 IDs, sources, counts and UTF-8 byte lengths, without message text. It reports the
-16 KiB normalization limit and whether evidence changed or was already marked
-truncated upstream. These are lengths at the reviewer boundary, not the size of
+configurable soft context budget (`approver.context_budget_bytes`, default 24576),
+serialized common-input bytes before/after trimming, removed prior-message count,
+and whether the retained input still exceeds the budget. It also reports whether
+evidence changed or was already marked truncated upstream. These are lengths at the reviewer boundary, not the size of
 an original transcript. For agy transcript collection, `hook_input` also includes
 `authorization_collection`: collection limits, bytes read, selected counts and
 any reached limit. A transcript read stopped at the size cap reports a lower bound;

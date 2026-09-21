@@ -310,3 +310,17 @@ older oversized content or Pi compaction markers outside the window, do not make
 the selected evidence incomplete. Nontext or oversized evidence within the
 window still fails closed. Older instructions outside this window are not sent;
 the user may need to restate constraints or authorization relevant to the action.
+
+## History selection update
+
+History size is managed centrally in any-auto through
+`approver.context_budget_bytes` (default 24576, also configurable per agent).
+Pi/agy forward up to five complete user messages without byte trimming. The
+shared input builder removes whole oldest prior messages until the serialized
+common review input fits or only one prior message remains. The latest message
+and most recent prior message (when present) are always retained. Action and
+script evidence are preserved; backend prompts/questions are excluded from this
+budget. Oversized minimum-window inputs are sent without a local size rejection.
+Failed older agy history collection falls back to the latest valid message; agy
+retains transcript tail reading. Pi retains its existing incomplete-evidence handling. Transport does not trim again.
+See [current behavior](jev.md).

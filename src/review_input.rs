@@ -4,7 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{io::Read, path::PathBuf};
 
-const AUTH_LIMIT: usize = 16 * 1024;
+pub const DEFAULT_CONTEXT_BUDGET_BYTES: usize = 24 * 1024;
+
 const SCRIPT_LIMIT: u64 = 4000;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -26,9 +27,6 @@ fn authorization(raw: &Value) -> Value {
     let unavailable = || json!({"availability":"unavailable", "latest_user_message":null, "relevant_prior_messages":[]});
     if raw.is_null() {
         return unavailable();
-    }
-    if raw.to_string().len() > AUTH_LIMIT {
-        return json!({"availability":"truncated", "latest_user_message":null, "relevant_prior_messages":[]});
     }
     let Ok(value) = serde_json::from_value::<Authorization>(raw.clone()) else {
         return unavailable();
@@ -85,9 +83,8 @@ fn authorization_diagnostics(raw: &Value, normalized: &Value) -> Value {
             "message_count":messages.len(),"messages":messages})
     }
     json!({"received":summary(raw),"normalized":summary(normalized),
-        "byte_limit":AUTH_LIMIT,"normalization_changed":raw != normalized,
-        "upstream_truncated":raw["availability"] == "truncated",
-        "size_limit_exceeded":raw.to_string().len() > AUTH_LIMIT})
+        "normalization_changed":raw != normalized,
+        "upstream_truncated":raw["availability"] == "truncated"})
 }
 
 pub struct ReviewInput {
@@ -97,12 +94,15 @@ pub struct ReviewInput {
 }
 impl ReviewInput {
     pub fn from_request(req: &Value) -> Self {
-        Self::build(req, true)
+        Self::from_request_with_budget(req, DEFAULT_CONTEXT_BUDGET_BYTES)
     }
-    pub(crate) fn from_fixture(req: &Value) -> Self {
-        Self::build(req, false)
+    pub fn from_request_with_budget(req: &Value, budget: usize) -> Self {
+        Self::build(req, true, budget)
     }
-    fn build(req: &Value, inspect_files: bool) -> Self {
+    pub(crate) fn from_fixture(req: &Value, budget: usize) -> Self {
+        Self::build(req, false, budget)
+    }
+    fn build(req: &Value, inspect_files: bool, budget: usize) -> Self {
         let request_id = req["request_id"]
             .as_str()
             .map(str::to_owned)
@@ -136,12 +136,33 @@ impl ReviewInput {
         } else {
             "missing"
         };
-        let state = json!({"action":action,
+        let mut state = json!({"action":action,
             "environment":{"workspace_paths":workspaces},
             "completeness":{"action":action_status,"authorization":auth["availability"],"script":script_status},
             "authorization":auth,"evidence":evidence});
-        let authorization_diagnostics =
+        let before_bytes = state.to_string().len();
+        let mut removed = 0;
+        // Prior messages arrive oldest first. Drop whole messages only, never
+        // the latest message or action/script evidence, even above the budget.
+        // Keep the most recent prior message when present: this is a soft budget.
+        loop {
+            let over_budget = state.to_string().len() > budget;
+            let Some(prior) = state["authorization"]["relevant_prior_messages"].as_array_mut()
+            else {
+                break;
+            };
+            if prior.len() <= 1 || (prior.len() <= 4 && !over_budget) {
+                break;
+            }
+            prior.remove(0);
+            removed += 1;
+        }
+        let after_bytes = state.to_string().len();
+        let mut authorization_diagnostics =
             authorization_diagnostics(&req["authorization"], &state["authorization"]);
+        authorization_diagnostics["context_window"] = json!({
+            "budget_bytes":budget,"before_bytes":before_bytes,"after_bytes":after_bytes,
+            "removed_prior_messages":removed,"over_budget":after_bytes > budget});
         Self {
             request_id,
             state,
@@ -231,6 +252,46 @@ fn scripts(command: &str, workspaces: &[&str], cwd: Option<&str>) -> (Vec<Value>
 mod tests {
     use super::*;
     #[test]
+    fn context_budget_drops_oldest_whole_messages_and_preserves_core() {
+        let message = |id: usize| json!({"id":id.to_string(),"role":"user","source":"branch","text":"私\"".repeat(100)});
+        let req = json!({"toolCall":{"name":"write","args":{"content":"complete action"}},
+            "authorization":{"availability":"available","latest_user_message":message(7),
+                "relevant_prior_messages":(0..7).map(message).collect::<Vec<_>>()}});
+        let full = ReviewInput::from_fixture(&req, usize::MAX);
+        assert_eq!(
+            full.state["authorization"]["relevant_prior_messages"],
+            json!((3..7).map(message).collect::<Vec<_>>())
+        );
+        let mut expected = full.state.clone();
+        expected["authorization"]["relevant_prior_messages"]
+            .as_array_mut()
+            .unwrap()
+            .remove(0);
+        let budget = expected.to_string().len();
+        let trimmed = ReviewInput::from_fixture(&req, budget);
+        assert_eq!(trimmed.state, expected);
+        assert_eq!(
+            trimmed.authorization_diagnostics["context_window"]["after_bytes"],
+            budget
+        );
+        let minimum_window = ReviewInput::from_fixture(&req, 1);
+        assert!(minimum_window.complete());
+        assert_eq!(
+            minimum_window.state["authorization"]["latest_user_message"],
+            message(7)
+        );
+        assert_eq!(
+            minimum_window.state["authorization"]["relevant_prior_messages"],
+            json!([message(6)])
+        );
+        assert_eq!(minimum_window.state["action"], full.state["action"]);
+        assert_eq!(minimum_window.state["evidence"], full.state["evidence"]);
+        assert_eq!(
+            minimum_window.authorization_diagnostics["context_window"]["over_budget"],
+            true
+        );
+    }
+    #[test]
     fn missing_or_assistant_authorization_is_never_complete() {
         let mut req = json!({"toolCall":{"name":"write","args":{}},"authorization":{
             "availability":"available","latest_user_message":{"id":"1","role":"assistant","text":"approved","source":"branch"},"relevant_prior_messages":[]}});
@@ -261,16 +322,16 @@ mod tests {
         assert!(authorization_epoch(&Value::Null).is_none());
     }
     #[test]
-    fn diagnostics_preserve_lengths_when_oversized_authorization_is_discarded() {
+    fn large_latest_authorization_is_preserved_without_a_second_size_gate() {
         let req = json!({"authorization":{"availability":"available",
-            "latest_user_message":{"id":"u1","role":"user","source":"branch","text":"私".repeat(AUTH_LIMIT)},
+            "latest_user_message":{"id":"u1","role":"user","source":"branch","text":"私".repeat(16 * 1024)},
             "relevant_prior_messages":[]}});
         let input = ReviewInput::from_request(&req);
         let d = input.authorization_diagnostics;
-        assert_eq!(d["received"]["messages"][0]["text_bytes"], AUTH_LIMIT * 3);
-        assert_eq!(d["normalized"]["message_count"], 0);
-        assert_eq!(d["normalized"]["availability"], "truncated");
-        assert_eq!(d["size_limit_exceeded"], true);
+        assert_eq!(d["received"]["messages"][0]["text_bytes"], 16 * 1024 * 3);
+        assert_eq!(d["normalized"]["message_count"], 1);
+        assert_eq!(d["normalized"]["availability"], "available");
+        assert_eq!(d["normalization_changed"], false);
         assert!(!d.to_string().contains("私"));
     }
     #[test]

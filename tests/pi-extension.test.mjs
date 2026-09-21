@@ -64,7 +64,16 @@ test('Pi extension maps decisions, handles noninteractive asks, and records huma
     entries.unshift({type:'message',id:'old-large',message:{role:'user',content:'x'.repeat(13 * 1024)}});
     await handlers.get('tool_call')(event, ctx);
     call = JSON.parse(await readFile(capture,'utf8'));
-    assert.equal(call.payload.authorization.availability,'truncated');
+    assert.equal(call.payload.authorization.availability,'available');
+    assert.equal(call.payload.authorization.latest_user_message.id,'new-branch');
+    assert.equal(call.payload.authorization.relevant_prior_messages.length,1);
+    assert.equal(call.payload.authorization.relevant_prior_messages[0].text,'x'.repeat(13 * 1024));
+    entries.push({type:'message',id:'large-latest',message:{role:'user',content:'最新要求'.repeat(5000)}});
+    await handlers.get('tool_call')(event, ctx);
+    call = JSON.parse(await readFile(capture,'utf8'));
+    assert.equal(call.payload.authorization.availability,'available');
+    assert.equal(call.payload.authorization.latest_user_message.text,'最新要求'.repeat(5000));
+    assert.deepEqual(call.payload.authorization.relevant_prior_messages.map(m => m.id),['old-large','new-branch']);
     entries.length = 0;
     entries.push({type:'compaction'}, {type:'branch_summary'},
       {type:'message',id:'old-huge',message:{role:'user',content:'x'.repeat(13 * 1024)}});

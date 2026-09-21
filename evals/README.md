@@ -40,8 +40,8 @@ are sequential; each evaluation has the production 20-second total deadline.
 Retries default to zero so transient failures remain visible. `--retries 1` or
 `2` enables the production retry policy. The preflight bound is
 `cases × repeat × (retries + 1)` and must fit `--max-calls` (default 100).
-The entire suite, question schema, comparison compatibility, and request sizes
-are checked before any network calls.
+The entire suite, question schema, and comparison compatibility are checked
+before any network calls; there is no local 24 KiB request gate.
 
 Without `--questions`, the effective configured questions are used, including
 custom instructions. With it, the file replaces the **complete** questions object;

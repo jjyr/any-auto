@@ -493,14 +493,19 @@ fn oversized_response_and_missing_usage_are_handled_without_fabrication() {
 }
 
 #[test]
-fn oversized_action_and_missing_credentials_fail_before_network() {
+fn large_action_reaches_jev_unchanged_and_missing_credentials_fail_locally() {
     let h = Harness::new();
-    h.configure("http://127.0.0.1:1/v1", "");
+    let (url, worker) = server(vec![ok()]);
+    h.configure(&url, "");
     let mut req = request();
     req["toolCall"]["args"]["content"] = json!("x".repeat(25 * 1024));
     let result = h.hook(&req, "fixture-key");
-    assert_eq!(result["decision"], "deny");
-    assert!(result["reason"].as_str().unwrap().contains("24 KiB"));
+    assert_eq!(result["decision"], "allow");
+    let requests = worker.join().unwrap();
+    assert_eq!(
+        requests[0].1["state"]["action"]["args"]["content"],
+        req["toolCall"]["args"]["content"]
+    );
     let result = h.hook(&request(), "");
     assert_eq!(result["decision"], "deny");
     assert!(
@@ -509,7 +514,13 @@ fn oversized_action_and_missing_credentials_fail_before_network() {
             .unwrap()
             .contains("API key is empty")
     );
-    assert!(!h.logs().contains("backend_request"));
+    assert_eq!(
+        h.logs()
+            .lines()
+            .filter(|line| line.contains("\"event\":\"backend_request\""))
+            .count(),
+        1
+    );
 }
 
 #[test]

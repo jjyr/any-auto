@@ -559,19 +559,6 @@ pub async fn run(options: Options) -> Result<()> {
             Ok(report)
         })
         .transpose()?;
-    // Validate every encoded request before creating a report or making any calls.
-    for case in &cases {
-        let input = ReviewInput::from_fixture(&case.input);
-        ensure!(
-            serde_json::to_vec(
-                &json!({"model":config.approver.model,"state":input.state,"questions":questions})
-            )?
-            .len()
-                <= 24 * 1024,
-            "Case exceeds Jev request budget: {}",
-            case.id
-        );
-    }
     let mut backend =
         jev::JevBackend::for_evaluation(config.clone(), questions.clone(), options.retries)?;
     ensure!(
@@ -612,7 +599,8 @@ pub async fn run(options: Options) -> Result<()> {
     let mut cancelled = false;
     'cases: for case in &report.cases {
         for repetition in 1..=options.repeat {
-            let input = ReviewInput::from_fixture(&case.input);
+            let input =
+                ReviewInput::from_fixture(&case.input, config.approver.context_budget_bytes);
             let start = Instant::now();
             let (result, events) = audit::capture(async {
                 tokio::select! {

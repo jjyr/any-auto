@@ -218,7 +218,14 @@ impl Bridge {
             return Assessment::deny(format!("Invalid reviewer configuration: {e:#}"));
         }
 
-        let input = ReviewInput::from_request(req);
+        let input = ReviewInput::from_request_with_budget(
+            req,
+            self.settings
+                .as_ref()
+                .unwrap()
+                .approver
+                .context_budget_bytes,
+        );
         let id = &input.request_id;
         audit::record(
             id,

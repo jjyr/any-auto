@@ -200,6 +200,7 @@ struct ApproverSettings {
     effort: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+    context_budget_bytes: Option<usize>,
     probability_threshold: Option<f64>,
     diagnostic_snapshot: Option<bool>,
     instructions: Option<JevInstructions>,
@@ -249,6 +250,7 @@ pub struct ApproverConfig {
     pub base_url: String,
     #[serde(serialize_with = "serialize_api_key")]
     pub api_key: String,
+    pub context_budget_bytes: usize,
     pub probability_threshold: f64,
     pub diagnostic_snapshot: bool,
     pub instructions: JevInstructions,
@@ -345,6 +347,7 @@ fn resolve_config(
         "effort",
         "base_url",
         "api_key",
+        "context_budget_bytes",
         "probability_threshold",
         "diagnostic_snapshot",
         "instructions",
@@ -373,8 +376,14 @@ fn resolve_config(
     let agent_values = serde_json::to_value(&agent)?;
     let mut settings = file.approver;
     if agent.provider.is_some() && agent.provider != settings.provider.or(Some(defaults)) {
-        settings = ApproverSettings::default();
-        sources.values_mut().for_each(|s| *s = "default".into());
+        settings = ApproverSettings {
+            context_budget_bytes: settings.context_budget_bytes,
+            ..Default::default()
+        };
+        sources
+            .iter_mut()
+            .filter(|(key, _)| key.as_str() != "context_budget_bytes")
+            .for_each(|(_, s)| *s = "default".into());
     }
     for (key, value) in agent_values.as_object().unwrap() {
         if !value.is_null() {
@@ -406,6 +415,9 @@ fn resolve_config(
     if agent.api_key.is_some() {
         settings.api_key = agent.api_key;
     }
+    if agent.context_budget_bytes.is_some() {
+        settings.context_budget_bytes = agent.context_budget_bytes;
+    }
     if agent.probability_threshold.is_some() {
         settings.probability_threshold = agent.probability_threshold;
     }
@@ -431,7 +443,10 @@ fn resolve_config(
             settings.probability_threshold = None;
             settings.diagnostic_snapshot = None;
             settings.instructions = None;
-            sources.values_mut().for_each(|s| *s = "default".into());
+            sources
+                .iter_mut()
+                .filter(|(key, _)| key.as_str() != "context_budget_bytes")
+                .for_each(|(_, s)| *s = "default".into());
         }
         settings.provider = Some(provider);
         sources.insert("provider".into(), "ANY_AUTO_PROVIDER".into());
@@ -561,7 +576,15 @@ fn resolve_config(
         provider != Provider::Openai || !selected_model.trim().is_empty(),
         "OpenAI approver requires model"
     );
+    let context_budget_bytes = settings
+        .context_budget_bytes
+        .unwrap_or(crate::review_input::DEFAULT_CONTEXT_BUDGET_BYTES);
+    anyhow::ensure!(
+        context_budget_bytes > 0,
+        "context_budget_bytes must be positive"
+    );
     let approver = ApproverConfig {
+        context_budget_bytes,
         provider,
         model: (!selected_model.trim().is_empty()).then(|| selected_model.trim().into()),
         effort,
@@ -640,6 +663,11 @@ fn print_approver(
             },
         );
     }
+    row(
+        "Context budget bytes",
+        "context_budget_bytes",
+        &approver.context_budget_bytes.to_string(),
+    );
     if approver.provider == Provider::Jev {
         row(
             "Threshold",
@@ -803,6 +831,32 @@ mod jev_tests {
     use super::*;
     fn resolve(text: &str, mode: Mode) -> anyhow::Result<ReviewerConfig> {
         resolve_config(mode, toml::from_str(text)?, false)
+    }
+    #[test]
+    fn common_context_budget_defaults_overrides_and_validation() {
+        assert_eq!(
+            resolve("", Mode::Pi).unwrap().approver.context_budget_bytes,
+            24576
+        );
+        let common = "[approver]\nprovider='jev'\ncontext_budget_bytes=32768\n[agents.pi.approver]\nprovider='pi'\n";
+        let c = resolve(common, Mode::Pi).unwrap();
+        assert_eq!(c.approver.context_budget_bytes, 32768);
+        assert_eq!(c.approver_sources["context_budget_bytes"], "[approver]");
+        let c = resolve(&format!("{common}context_budget_bytes=65536\n"), Mode::Pi).unwrap();
+        assert_eq!(c.approver.context_budget_bytes, 65536);
+        assert_eq!(
+            c.approver_sources["context_budget_bytes"],
+            "[agents.pi.approver]"
+        );
+        for value in ["0", "-1", "1.5"] {
+            assert!(
+                resolve(
+                    &format!("[approver]\ncontext_budget_bytes={value}"),
+                    Mode::Pi
+                )
+                .is_err()
+            );
+        }
     }
     #[test]
     fn jev_defaults_and_instruction_inheritance() {

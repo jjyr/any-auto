@@ -96,32 +96,47 @@ State contains:
 - Direct script excerpts where available, with source paths and trust markers.
 - Explicit completeness markers for the action, authorization, and script evidence.
 
-Pi reads active branch message entries, accepts only role=user, and preserves
-message IDs. It collects the latest user message and up to four preceding user
-messages (five total), with at most 12 KiB of text. Prior messages are sent in
-chronological order. Older entries outside this window do not mark the evidence
-incomplete. Nontext content, compaction/branch summaries encountered within the
-window, or excessive size still mark it incomplete. Assistant statements and tool
-outputs cannot stand in for user messages. Branch switches do not retain the old
-branch's evidence.
+Pi and agy collect the latest user message and up to four preceding messages
+without byte-based trimming. any-auto centrally applies a configurable soft
+budget to the serialized shared review input (action, environment, completeness,
+authorization and script evidence, excluding backend prompts/questions).
+It removes whole oldest prior messages until the input fits or only one prior
+message remains. When history exists, the most recent prior message is retained. The latest message is always retained in full, even above budget.
 
-The Rust boundary validates the authorization shape and applies a 16 KiB encoded
-budget. Antigravity CLI hooks supply `transcriptPath`, `artifactDirectoryPath`,
-`conversationId`, and `stepIdx`. The collector verifies that the transcript belongs
-to that conversation and reads completed `USER_INPUT` / `USER_EXPLICIT` entries
-before the current tool step. It extracts the original `<USER_REQUEST>` text,
-excluding generated metadata and model responses. The latest five user messages and
-12 KiB of user text are collected, within a 4 MiB transcript read limit.
+Configure the budget for any backend, globally or per agent:
 
-Both collectors use a recent-message window, not the full conversation. Older
-instructions and restrictions outside the window are not sent; an action that
-needs those details may require the user to restate them. Reaching five messages
-is normal window selection, not truncation. Byte limits still fail closed.
+```toml
+[approver]
+context_budget_bytes = 24576 # default: 24 KiB
 
-Missing, malformed, oversized, or mismatched transcripts do not establish
-authorization. Desktop hooks can use the same collector when they provide this
-contract; automatic Desktop collection has not been verified. Locally allowlisted
-read-only tools still bypass backend review. User-message contents are not logged.
+[agents.pi.approver]
+context_budget_bytes = 32768
+```
+
+The value must be a positive integer. It is inherited even when changing providers.
+The five-message maximum still applies. Action and collected script evidence are
+never shortened by this budget, and exceeding it with the minimum message window does not
+cause a local rejection. Audit metadata records before/after bytes and removed
+message counts without message text.
+
+Older messages are kept whole and sent in chronological order. If older agy history
+cannot be parsed or selected reliably, its collector falls back to the latest
+valid user message. Pi retains its existing incomplete-evidence handling. Latest nontext/missing evidence remains unavailable or
+incomplete; assistant messages never substitute for user authorization.
+
+The Rust boundary validates authorization structure without imposing another
+byte-size rejection. Antigravity verifies that the transcript belongs to the
+hook conversation and reads the last 4 MiB, discarding a partial first line. It
+selects completed `USER_INPUT` / `USER_EXPLICIT` entries before the current step,
+extracting `<USER_REQUEST>` and excluding generated metadata. A long transcript
+therefore does not hide the latest request merely because older records grew.
+Missing or mismatched transcripts still cannot establish authorization. Desktop
+hooks can use this contract; automatic Desktop collection remains unverified.
+
+This is a recent-message window, not the full conversation. Older constraints
+outside the selected window are not sent; restate them in the latest request
+when relevant. Selection budgets bound older history, not the latest request.
+User-message contents are omitted from ordinary audit logs.
 
 Script extraction is bounded to four directly referenced scripts within the
 workspace, at most 4000 bytes each. Missing or truncated scripts prevent automatic
@@ -129,8 +144,10 @@ approval. This is limited evidence collection, not complete shell or dependency
 analysis. Builds and scripts with indirect effects still depend on the classifier
 identifying insufficient evidence.
 
-The complete encoded Jev request is limited to 24 KiB. Oversized requests fail
-closed; commands are never silently truncated to make a request fit. Authorization
+There is no local 24 KiB gate or secondary history trimming when sending the Jev
+request. Complete actions, the selected user messages, and collected script
+evidence are sent unchanged. The service still enforces its own input limits.
+Authorization
 text is omitted from hook-input and reviewer-request audit payloads. Existing
 action and backend-result logging still applies; avoid putting secrets in tool
 arguments or custom instructions.
