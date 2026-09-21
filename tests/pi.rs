@@ -1,3 +1,4 @@
+mod support;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -32,7 +33,7 @@ while IFS= read -r line; do
   printf '%s\n' "$line" >> "$HOME/pi-prompts"
   printf '{"type":"response","id":"unrelated","command":"prompt","success":false}\n'
   printf '{"type":"response","id":"%s","command":"prompt","success":true}\n' "$id"
-  printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"outcome\":\"allow\",\"rationale\":\"RPC approved\"}"}],"stopReason":"stop","usage":{"input":10,"output":2,"cacheRead":5,"cacheWrite":3}}}'
+  printf '%s\n' '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"RPC approved\"}"}],"stopReason":"stop","usage":{"input":10,"output":2,"cacheRead":5,"cacheWrite":3}}}'
   printf '%s\n' '{"type":"agent_end","messages":[{"usage":{"input":999}}]}' '{"type":"agent_settled"}'
  ;;
  esac
@@ -87,7 +88,7 @@ done
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(json!({"conversationId":session,"builtin_tool":builtin,"toolCall":{"name":name,"args":{"command":"echo hello","path":"a"}},"workspacePaths":["/tmp"]}).to_string().as_bytes()).unwrap();
+        child.stdin.take().unwrap().write_all(json!({"conversationId":session,"builtin_tool":builtin,"authorization":support::authorization(),"toolCall":{"name":name,"args":{"command":"echo hello","path":"a"}},"workspacePaths":["/tmp"]}).to_string().as_bytes()).unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(
             out.status.success(),
@@ -173,19 +174,6 @@ fn unsupported_effort_fails_before_prompt_and_provider_is_independent_of_agent()
     assert_eq!(c["reviewer"]["approver"]["provider"], "pi");
 }
 #[test]
-fn host_override_resets_foreign_model_and_install_only_touches_pi() {
-    let h = Agent::new();
-    h.config("[approver]\nprovider='openai'\nmodel='foreign'\neffort='high'\n[agents.pi.approver]\nprovider='pi'\n");
-    let c: Value = serde_json::from_str(&h.run(&["config", "--agent", "pi", "--json"])).unwrap();
-    assert!(c["reviewer"]["approver"]["model"].is_null());
-    assert!(c["reviewer"]["approver"]["effort"].is_null());
-    h.run(&["install", "--pi"]);
-    let ext = fs::read_to_string(h.root.path().join(".pi/agent/extensions/any-auto.ts")).unwrap();
-    assert!(ext.contains(env!("CARGO_BIN_EXE_any-auto")));
-    assert!(!h.root.path().join(".config/any-auto/hooks.json").exists());
-}
-
-#[test]
 fn cancelled_hook_discards_busy_rpc_and_next_review_uses_new_child() {
     let h = Agent::new();
     let path = h.root.path().join("pi");
@@ -199,7 +187,7 @@ fn cancelled_hook_discards_busy_rpc_and_next_review_uses_new_child() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    hook.stdin.take().unwrap().write_all(br#"{"conversationId":"one","toolCall":{"name":"write","args":{"path":"HANG"}},"workspacePaths":[]}"#).unwrap();
+    hook.stdin.take().unwrap().write_all(br#"{"authorization":{"availability":"available","latest_user_message":{"id":"fixture-user","role":"user","source":"test","text":"Run the requested development task"},"relevant_prior_messages":[]},"conversationId":"one","toolCall":{"name":"write","args":{"path":"HANG"}},"workspacePaths":[]}"#).unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     while !h.root.path().join("pi-prompts").exists() {
         assert!(std::time::Instant::now() < deadline, "RPC never started");
@@ -254,7 +242,7 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
             let mut body = vec![0; n];
             stream.read_exact(&mut body).unwrap();
             requests.push(serde_json::from_slice::<Value>(&body).unwrap());
-            let response = json!({"id":format!("resp_{i}"),"model":"fixture-model","status":"completed","reasoning":{"effort":"low"},"usage":{"input_tokens":20,"output_tokens":3,"input_tokens_details":{"cached_tokens":10}},"output":[{"type":"message","content":[{"type":"output_text","text":"{\"outcome\":\"allow\"}"}]}]}).to_string();
+            let response = json!({"id":format!("resp_{i}"),"model":"fixture-model","status":"completed","reasoning":{"effort":"low"},"usage":{"input_tokens":20,"output_tokens":3,"input_tokens_details":{"cached_tokens":10}},"output":[{"type":"message","content":[{"type":"output_text","text":"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"Fixture assessment\"}"}]}]}).to_string();
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",response.len(),response).unwrap();
         }
         requests
@@ -331,7 +319,7 @@ fn changed_config_starts_new_rpc_generation() {
 fn logs_use_request_provider_instead_of_daemon_startup_environment() {
     let h = Agent::new();
     h.run(&["daemon", "start", "--agent", "pi"]);
-    fs::write(h.root.path().join("agy"), "#!/bin/sh\necho '{\"status\":\"SUCCESS\",\"conversation_id\":\"cli-session\",\"response\":\"{\\\"outcome\\\":\\\"allow\\\"}\"}'\n").unwrap();
+    fs::write(h.root.path().join("agy"), "#!/bin/sh\necho '{\"status\":\"SUCCESS\",\"conversation_id\":\"cli-session\",\"response\":\"{\\\"risk\\\":\\\"low\\\",\\\"authorization\\\":\\\"high\\\",\\\"policy\\\":\\\"permitted\\\",\\\"rationale\\\":\\\"Fixture assessment\\\"}\"}'\n").unwrap();
     fs::set_permissions(h.root.path().join("agy"), fs::Permissions::from_mode(0o755)).unwrap();
     let mut hook = h
         .cmd()
@@ -342,7 +330,7 @@ fn logs_use_request_provider_instead_of_daemon_startup_environment() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
-    hook.stdin.take().unwrap().write_all(br#"{"conversationId":"one","toolCall":{"name":"write","args":{}},"workspacePaths":[]}"#).unwrap();
+    hook.stdin.take().unwrap().write_all(br#"{"authorization":{"availability":"available","latest_user_message":{"id":"fixture-user","role":"user","source":"test","text":"Run the requested development task"},"relevant_prior_messages":[]},"conversationId":"one","toolCall":{"name":"write","args":{}},"workspacePaths":[]}"#).unwrap();
     let result: Value = serde_json::from_slice(&hook.wait_with_output().unwrap().stdout).unwrap();
     assert_eq!(result["decision"], "allow");
     let records: Value =
@@ -363,20 +351,6 @@ fn pi_error_message_cannot_allow_even_if_text_contains_allow() {
     assert_eq!(h.hook("one", "write", true)["decision"], "deny");
     let records: Value = serde_json::from_str(&h.run(&["logs", "--no-group", "--json"])).unwrap();
     assert_eq!(records[0]["stage"], "reviewer_error");
-}
-
-#[test]
-fn logs_and_stats_default_to_agent_groups() {
-    let h = Agent::new();
-    h.hook("one", "write", true);
-    let grouped: Value = serde_json::from_str(&h.run(&["logs", "--json"])).unwrap();
-    assert_eq!(grouped["pi"].as_array().unwrap().len(), 1);
-    let plain = h.run(&["logs"]);
-    assert!(plain.starts_with("agent: pi\n"), "{plain}");
-    let stats = h.run(&["stats"]);
-    assert!(stats.starts_with("agent: pi\n"), "{stats}");
-    let merged: Value = serde_json::from_str(&h.run(&["logs", "--no-group", "--json"])).unwrap();
-    assert_eq!(merged.as_array().unwrap().len(), 1);
 }
 
 #[test]
@@ -460,4 +434,161 @@ fn pi_sessions_are_private_and_idle_children_are_reaped_then_restored() {
     );
     h.run(&["daemon", "stop"]);
     assert!(daemon.wait().unwrap().success());
+}
+
+#[test]
+fn evaluator_records_backend_prompts_without_production_logs() {
+    for provider in ["pi", "cli"] {
+        let h = Agent::new();
+        h.config(&format!(
+            "prompt='Custom classification prompt'\n[approver]\nprovider='{provider}'\n"
+        ));
+        if provider == "cli" {
+            let path = h.root.path().join("agy");
+            let response = json!({"status":"SUCCESS","conversation_id":"eval",
+                "response":json!({"risk":"low","authorization":"high","policy":"permitted","rationale":"Fixture"}).to_string()});
+            fs::write(&path, format!("#!/bin/sh\nprintf '%s\\n' '{response}'\n")).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let suite = h.root.path().join("suite.jsonl");
+        let report_path = h.root.path().join("report.json");
+        let cases: Vec<_> = (0..2)
+            .map(|i| {
+                json!({"id":format!("case-{i}"),"reason":"Fixture",
+            "expected":{"decision":"allow"},"input":{"authorization":support::authorization(),
+                "toolCall":{"name":"write","args":{"path":"fixture.txt"}}}})
+                .to_string()
+            })
+            .collect();
+        fs::write(&suite, cases.join("\n")).unwrap();
+        let output = h
+            .cmd()
+            .args(["reviewer-eval", "--agent", "pi", "--repeat", "1", "--suite"])
+            .arg(&suite)
+            .arg("--output")
+            .arg(&report_path)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let report: Value = serde_json::from_slice(&fs::read(&report_path).unwrap()).unwrap();
+        assert_eq!(report["provider"], provider);
+        let expected_prompt = if provider == "cli" {
+            any_auto::prompts::agy_session_prompt("Custom classification prompt")
+        } else {
+            "Custom classification prompt".to_owned()
+        };
+        assert_eq!(report["prompt"], expected_prompt);
+        assert!(report.get("questions").is_none());
+        assert!(report.get("questions_hash").is_none());
+        if provider == "pi" {
+            let args = fs::read_to_string(h.root.path().join("pi-args")).unwrap();
+            assert!(args.lines().any(|line| line == expected_prompt));
+        }
+
+        assert_eq!(report["completed"], true);
+        assert!(
+            report["trials"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|trial| trial["matched"] == true)
+        );
+        assert_eq!(
+            report["summary"]["backend_calls"],
+            if provider == "cli" { 4 } else { 2 }
+        );
+        assert!(!h.root.path().join("logs").exists());
+        assert!(!h.root.path().join("state").exists());
+        if provider == "pi" {
+            assert_eq!(
+                fs::read_to_string(h.root.path().join("pi-pids"))
+                    .unwrap()
+                    .lines()
+                    .count(),
+                2
+            );
+        }
+    }
+}
+
+#[test]
+fn evaluator_limits_concurrent_trials_and_isolates_sessions() {
+    let h = Agent::new();
+    let path = h.root.path().join("pi");
+    let script = fs::read_to_string(&path).unwrap().replace(
+        "count=$((count + 1))",
+        "count=$((count + 1))\n  : > \"$HOME/started-$$\"\n  while [ ! -f \"$HOME/release\" ]; do /bin/sleep 0.02; done",
+    );
+    fs::write(path, script).unwrap();
+    let suite = h.root.path().join("suite.jsonl");
+    let output = h.root.path().join("report.json");
+    let cases: Vec<_> = (0..3)
+        .map(|i| {
+            json!({"id":format!("case-{i}"),"reason":"Fixture",
+        "expected":{"decision":"allow"},"input":{"authorization":support::authorization(),
+            "toolCall":{"name":"write","args":{}}}})
+            .to_string()
+        })
+        .collect();
+    fs::write(&suite, cases.join("\n")).unwrap();
+    let mut child = h
+        .cmd()
+        .args([
+            "reviewer-eval",
+            "--agent",
+            "pi",
+            "--repeat",
+            "1",
+            "--concurrency",
+            "2",
+            "--suite",
+        ])
+        .arg(suite)
+        .arg("--output")
+        .arg(&output)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let count = || {
+        fs::read_dir(h.root.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("started-"))
+            .count()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while count() < 2 {
+        if std::time::Instant::now() >= deadline {
+            child.kill().unwrap();
+            panic!("Two evaluations did not start concurrently");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert_eq!(count(), 2, "The third trial must remain queued");
+    fs::write(h.root.path().join("release"), "").unwrap();
+    let result = child.wait_with_output().unwrap();
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(count(), 3);
+    let report: Value = serde_json::from_slice(&fs::read(output).unwrap()).unwrap();
+    assert_eq!(report["concurrency"], 2);
+    assert_eq!(report["summary"]["matched"], 3);
+    assert_eq!(
+        report["trials"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|trial| trial["case_id"].as_str().unwrap())
+            .collect::<Vec<_>>(),
+        ["case-0", "case-1", "case-2"]
+    );
 }

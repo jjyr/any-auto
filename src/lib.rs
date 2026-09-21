@@ -6,6 +6,8 @@ pub mod daemon;
 pub mod install;
 pub mod parser;
 pub mod pipeline;
+pub mod policy;
+pub mod prompts;
 pub mod register;
 pub mod reviewer;
 pub mod sessions;

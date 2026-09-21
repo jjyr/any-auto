@@ -139,7 +139,7 @@ Parse with dedicated serde DTOs. Do not call `reviewer::parse` or recover JSON f
 
 1. Validate a nonempty model, all required answers, and type=choice for each required answer.
 2. choice must be a defined option for that question. probabilities must contain all and only the corresponding options.
-3. Every probability and confidence must be finite and within `[0,1]`. Probabilities must sum to approximately 1; suggested tolerance is `1e-3`. Reject values outside tolerance instead of renormalizing. choice must identify a maximum-probability option, allowing floating-point ties.
+3. Every probability and confidence must be finite and within `[0,1]`. The original proposal suggested a `1e-3` sum tolerance; this has been superseded to match the official Python SDK: do not validate the sum or renormalize probabilities. Approval gates use the original values. choice must identify a maximum-probability option, allowing floating-point ties.
 4. Missing questions/fields, invalid numbers, unknown options, and truncated responses produce `Assessment::deny` with error_stage. They are protocol errors, not low confidence.
 5. Validate usage as nonnegative integers. Missing or invalid usage becomes unknown with a protocol diagnostic, never fabricated zero tokens. An otherwise valid decision need not fail because accounting fields are absent. This is our proposed tolerance for third-party compatibility; the official schema requires usage.
 6. Permit unrelated top-level metadata extensions. Additional answers or arbitrary JSON fields must not affect the decision.
@@ -261,7 +261,7 @@ Implement in three reviewable stages:
 
 Required validation includes:
 
-- Contract tests: valid Choice responses, missing fields, unknown options, incorrect types, invalid probabilities/sums, choice not matching a maximum, extra metadata, and absent usage. Verify that invalid cases cannot produce an incorrect allow.
+- Contract tests: valid Choice responses, approximate probability sums with unchanged approval gates, missing fields, unknown options, incorrect types, invalid probabilities, choice not matching a maximum, extra metadata, and absent usage. Verify that invalid cases cannot produce an incorrect allow.
 - Policy tests: missing authorization, revoked approval, out-of-scope arguments, read-only/build operations, deployment/publishing, credential exfiltration, .git destruction, unknown scripts, truncated commands, adversarial state, branch changes, English/Chinese requests, and conflicting question results. Check rule ordering, the default threshold of 0.9, user overrides including 0 and 1, invalid configuration, and exact threshold boundaries. Verify latest-message provenance and preservation of earlier constraints for all backends.
 - HTTP tests: no retries for 401/422; backoff for 429/529; Retry-After beyond the budget; timeout/cancellation; disabled redirects; oversized responses; no credentials or sensitive bodies in logs.
 - Regression tests: preserve other backends' session/retry behavior; no Jev session persistence or cross-user credential reuse; correct cleanup on configuration changes; binary backend outcomes; pipeline-only human escalation; correct circuit breaker, logging, and statistics contracts.
@@ -310,3 +310,26 @@ older oversized content or Pi compaction markers outside the window, do not make
 the selected evidence incomplete. Nontext or oversized evidence within the
 window still fails closed. Older instructions outside this window are not sent;
 the user may need to restate constraints or authorization relevant to the action.
+
+## History selection update
+
+History size is managed centrally in any-auto through
+`approver.context_budget_bytes` (default 24576, also configurable per agent).
+Pi/agy forward up to five complete user messages without byte trimming. The
+shared input builder removes whole oldest prior messages until the serialized
+common review input fits or only one prior message remains. The latest message
+and most recent prior message (when present) are always retained. Action and
+script evidence are preserved; backend prompts/questions are excluded from this
+budget. Oversized minimum-window inputs are sent without a local size rejection.
+Failed older agy history collection falls back to the latest valid message; agy
+retains transcript tail reading. Pi retains its existing incomplete-evidence handling. Transport does not trim again.
+See [current behavior](jev.md).
+
+## Codex-style authorization update
+
+The v5 runtime supersedes the original low/medium-only decision proposal above:
+low/medium risk has no authorization-score gate; high risk can pass with at
+least medium authorization and narrowly scoped permitted policy. Critical risk
+and absolute prohibitions remain denied. Jev probability and completeness gates
+remain. Already-authorized publishing/remote actions no longer require an extra
+confirmation solely because they leave local-development scope.

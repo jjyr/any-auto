@@ -289,3 +289,44 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::stable_version;
+
+    #[test]
+    fn registry_source_ignores_unrelated_packages() {
+        let root = tempfile::tempdir().unwrap();
+        let binary = root.path().join("bin/any-auto");
+        let metadata = root.path().join(".crates2.json");
+        std::fs::write(&metadata,
+            r#"{"installs":{"other 1.0.0 (registry+https://example.com/index)":{"bins":["other"]}}}"#
+        ).unwrap();
+        assert!(super::registry_source(&binary).unwrap().is_none());
+        std::fs::write(&metadata,
+            r#"{"installs":{"any-auto 0.5.2 (registry+https://example.com/index)":{"bins":["any-auto"]}}}"#
+        ).unwrap();
+        assert_eq!(
+            super::registry_source(&binary).unwrap(),
+            Some((root.path().to_owned(), "https://example.com/index".into()))
+        );
+    }
+
+    #[test]
+    fn versions_accept_stable_releases_and_reject_invalid_paths() {
+        for input in ["0.5.2", "v0.5.2"] {
+            assert_eq!(stable_version(input).unwrap(), "0.5.2");
+        }
+        for input in [
+            "../bad",
+            "v../bad",
+            "",
+            "1.2",
+            "01.2.3",
+            "1.2.3-beta",
+            "1.2.3/extra",
+        ] {
+            assert!(stable_version(input).is_err(), "{input}");
+        }
+    }
+}

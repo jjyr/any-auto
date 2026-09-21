@@ -1,3 +1,4 @@
+mod support;
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -24,7 +25,7 @@ impl Agent {
         agent.mock("agentapi", r#"
 case "$1" in
  new-conversation) echo '{"conversationId":"sidecar-session"}';;
- send-message) [ "$2" = sidecar-session ] || exit 2; echo '{"response":"{\"outcome\":\"allow\",\"rationale\":\"sidecar\"}"}';;
+ send-message) [ "$2" = sidecar-session ] || exit 2; echo '{"response":"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"sidecar\"}"}';;
  *) exit 3;;
 esac
 "#);
@@ -46,7 +47,7 @@ else
  echo send >> "$HOME/agy-calls"
  # Even read-only tools must not recurse into the reviewer or be auto-allowed.
  printf '%s' '{"toolCall":{"name":"view_file","args":{}}}' | "$APPROVER_TEST_BIN" hook > "$HOME/nested-result"
- echo '{"status":"SUCCESS","conversation_id":"cli-session","response":"{\"outcome\":\"allow\",\"rationale\":\"cli\"}"}'
+ echo '{"status":"SUCCESS","conversation_id":"cli-session","response":"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"cli\"}"}'
 fi
 "#);
         agent
@@ -105,7 +106,7 @@ fi
             .stdout(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(json!({"conversationId":"same-user-conversation", "toolCall":{"name":"run_command","args":{"CommandLine":"git log -n 5 --oneline"}}}).to_string().as_bytes()).unwrap();
+        child.stdin.take().unwrap().write_all(json!({"conversationId":"same-user-conversation", "authorization":support::authorization(),"toolCall":{"name":"run_command","args":{"CommandLine":"git log -n 5 --oneline"}}}).to_string().as_bytes()).unwrap();
         let out = child.wait_with_output().unwrap();
         assert!(out.status.success());
         serde_json::from_slice(&out.stdout).unwrap()
@@ -213,7 +214,7 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
         "echo '{\"error\":\"agy unavailable\"}'; exit 1",
         "echo '{\"status\":\"ERROR\",\"conversation_id\":\"bad\",\"response\":\"allow\"}'",
         "echo '{\"status\":\"SUCCESS\",\"response\":\"missing session\"}'",
-        "echo '{\"status\":\"SUCCESS\",\"conversation_id\":\"bad\",\"response\":{\"outcome\":\"allow\"}}'",
+        "echo '{\"status\":\"SUCCESS\",\"conversation_id\":\"bad\",\"response\":{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"Fixture assessment\"}}'",
     ] {
         let h = Agent::new();
         h.mock("agy", body);
@@ -230,7 +231,11 @@ fn cli_model_and_prompt_are_passed_as_single_arguments() {
     let h = Agent::new();
     let config = h.dir.path().join(".config/any-auto");
     fs::create_dir_all(&config).unwrap();
-    fs::write(config.join("config.toml"), "model = 'pro'\ncli_model = 'gemini-3.8-flash-high'\nprompt = 'custom $(do-not-execute) prompt'\n").unwrap();
+    fs::write(
+        config.join("config.toml"),
+        "prompt = 'custom $(do-not-execute) prompt'\n[approver]\nmodel = 'gemini-3.8-flash-high'\n",
+    )
+    .unwrap();
     assert_eq!(h.hook(None, false)["decision"], "allow");
     let args = fs::read_to_string(h.dir.path().join("agy-args")).unwrap();
     assert!(args.contains("custom $(do-not-execute) prompt"));
@@ -305,7 +310,7 @@ while [ "$#" -gt 0 ]; do
 done
 if [ "$resume" = no ]; then turn=1; else read -r turn < "$HOME/turn"; turn=$((turn + 1)); fi
 printf '%s\n' "$turn" > "$HOME/turn"
-printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"usage":{"input_tokens":%s,"output_tokens":%s},"response":"%s"}\n' "$turn" "$((turn * 100))" "$((turn * 10))" '{\"outcome\":\"allow\"}'
+printf '{"status":"SUCCESS","conversation_id":"usage-session","num_turns":%s,"usage":{"input_tokens":%s,"output_tokens":%s},"response":"%s"}\n' "$turn" "$((turn * 100))" "$((turn * 10))" '{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"permitted\",\"rationale\":\"Fixture assessment\"}'
 "#);
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
     assert_eq!(h.hook(Some("cli"), false)["decision"], "allow");
@@ -399,7 +404,7 @@ case "$ANTIGRAVITY_LS_ADDRESS:$ANTIGRAVITY_CSRF_TOKEN" in
 esac
 case "$1" in
  new-conversation) printf '{"conversationId":"%s"}\n' "$cid";;
- send-message) [ "$2" = "$cid" ] || exit 9; printf '{"outcome":"allow","rationale":"%s"}\n' "$cid";;
+ send-message) [ "$2" = "$cid" ] || exit 9; printf '{"risk":"low","authorization":"high","policy":"permitted","rationale":"%s"}\n' "$cid";;
 esac
 "#,
     );
@@ -419,7 +424,7 @@ esac
             .stderr(Stdio::piped())
             .spawn()
             .unwrap();
-        child.stdin.take().unwrap().write_all(br#"{"conversationId":"same","toolCall":{"name":"run_command","args":{"CommandLine":"cargo test"}},"workspacePaths":[]}"#).unwrap();
+        child.stdin.take().unwrap().write_all(json!({"authorization":support::authorization(),"conversationId":"same","toolCall":{"name":"run_command","args":{"CommandLine":"cargo test"}},"workspacePaths":[]}).to_string().as_bytes()).unwrap();
         children.push(child);
     }
     for child in children {

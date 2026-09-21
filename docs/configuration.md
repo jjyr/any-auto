@@ -38,16 +38,18 @@ its provider prefix is distinct from this application's `provider = "pi"`.
 
 All approver fields are optional except `model` when using OpenAI. Omitted model
 or effort uses the backend default. A blank model also selects the default.
-For conversational backends, the optional top-level `prompt` replaces the built-in policy, including when it
-is explicitly empty. Do not put secrets in prompts or model names.
+For conversational backends, the optional top-level `prompt` (or `ANY_AUTO_PROMPT`)
+replaces the entire default from `src/prompts/prompt.txt`. Custom prompts must
+request the typed JSON classification contract. `approver.instructions` is Jev-only.
+Do not put secrets in prompts or model names.
 
 Resolution: built-in defaults, common `[approver]`, matching agent override,
 then environment overrides (an empty `ANY_AUTO_API_KEY` explicitly clears the key). Switching provider in an override resets
-inherited model, effort, base URL, and API key. Same-provider
-overrides merge fields. Only the selected agent's effective settings are validated,
-apart from the retained legacy `model` tier validation.
+inherited model, effort, base URL, API key, prompt, and Jev instructions. Context budget
+and probability threshold remain inherited. Within Jev, overrides merge individual instruction keys. Only the selected agent's effective settings are validated.
 
-Legacy `model` (agentapi tier), `cli_model` (agy model), and `prompt` remain accepted.
+Top-level `model` / `cli_model` and `ANY_AUTO_MODEL` / `ANY_AUTO_CLI_MODEL` are rejected.
+Use `[approver].model` or `ANY_AUTO_APPROVER_MODEL`. Top-level `prompt` remains supported.
 New `approver.model` takes precedence over the corresponding legacy model.
 
 ## Effort support
@@ -125,12 +127,15 @@ risk = "Assess actual operational risk, including irreversible external side eff
 ```
 
 The three instruction keys are `risk`, `authorization`, and `policy`. Omitted
-keys use built-in instructions; matching-provider agent overrides merge each key
+keys use built-in instructions; per-agent overrides merge each key
 independently. Answer options and local decision rules stay fixed. Instructions
 must be nonblank and at most 4096 UTF-8 bytes each. The probability threshold must
-be finite and in `[0,1]`. Jev-only fields on other providers, effort on Jev, and
+be finite and in `[0,1]` and is applied only when probability distributions exist.
+The threshold is shared across providers. Instructions and diagnostic snapshots
+on non-Jev providers, effort on Jev, and
 an explicitly customized top-level prompt with Jev are configuration errors.
 Use `approver.instructions` instead of the conversational prompt setting.
+See [shared review policy](review-policy.md) for the typed output contract.
 
 Changing instructions or the threshold refreshes the backend on the next review.
 `config --json` includes effective instructions and per-key sources; no API keys
@@ -169,7 +174,7 @@ Pi users do not need agy installed.
 | `ANY_AUTO_API_KEY` | API key value (overrides the configured `api_key`) |
 | `ANY_AUTO_APPROVER_MODEL` | Model for the selected provider |
 | `ANY_AUTO_EFFORT` | Backend-specific effort |
-| `ANY_AUTO_MODEL`, `ANY_AUTO_CLI_MODEL` | Legacy agentapi tier / agy model |
+| `ANY_AUTO_MODEL`, `ANY_AUTO_CLI_MODEL` | Removed; configuration error. Use `ANY_AUTO_APPROVER_MODEL` |
 | `ANY_AUTO_PROMPT` | Policy replacement |
 | `ANY_AUTO_SOCKET` | Socket base, default `~/.local/share/any-auto/runtime/approver.sock` |
 | `ANY_AUTO_STATE_DIR` | State base, default `~/.local/share/any-auto/agents` |

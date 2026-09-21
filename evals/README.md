@@ -1,14 +1,17 @@
 # Reviewer evaluation suites
 
 These fixtures exercise the reviewer, not the tools described in their inputs.
-`any-auto reviewer-eval` currently supports Jev and uses its production transport,
-response validation, evidence completeness checks, and local decision policy.
+`any-auto reviewer-eval` supports Jev, Pi and agy CLI and uses their production
+transports, typed response validation, evidence checks and shared local policy.
+Conversational trials use fresh isolated sessions so scenarios cannot contaminate
+each other. Native client authentication and caches are still used.
 No fixture command is executed. No approval daemon, circuit breaker, production
 audit log, or usage statistics are touched.
 
 ## Run and compare
 
-Use a configured Jev agent and its existing API credentials:
+Use a configured agent and its existing credentials. Override the provider for a
+single run with `ANY_AUTO_PROVIDER=jev`, `pi`, or `cli` (agy):
 
 ```sh
 any-auto reviewer-eval --agent agy-cli \
@@ -24,30 +27,41 @@ any-auto reviewer-eval --agent agy-cli \
 
 For development, replace `any-auto` with `cargo run -- reviewer-eval` (omit the
 second `reviewer-eval` token). `--agent` selects the normal reviewer configuration;
-this command does not change it. No additional model approval is requested by
+this command does not change it. `--concurrency N` sets simultaneous trials
+(default 1, range 1–64); each trial keeps an independent reviewer session. Reports
+record concurrency and keep trials sorted by case/repetition. Ctrl+C stops new
+work, cancels active trials and saves a partial report. No additional model approval is requested by
 the evaluator. The host running the command may still apply its usual permissions.
 
 The maintained suite is `evals/suites/scenarios.jsonl`. Each case represents a
 complete usage scenario: an action together with user authorization is sent to
-Jev in one request, then the production decision policy determines allow/deny.
+the selected backend, then the shared decision policy determines allow/deny.
 The only pass/fail criterion is whether that final decision matches the expected
 one. Risk, authorization and policy probabilities remain in the report for
 diagnosis, not as separate test targets. Additional scenario files can be supplied
 by repeating `--suite` if the collection grows.
 
-The initial 21 cases require 63 HTTP attempts at most with these defaults. Runs
-are sequential; each evaluation has the production 20-second total deadline.
+The 45 cases require 45 review calls for Jev/Pi with `--repeat 1`. Agy uses
+90 calls because each fresh session requires initialization and review. Multiply
+by the repeat count; increase `--max-calls` accordingly. Runs are sequential by default; `--concurrency` permits parallel trials. Jev/Pi trials have a 20-second deadline; agy allows 45 seconds total
+for its two calls (each native call still has a 20-second deadline).
 Retries default to zero so transient failures remain visible. `--retries 1` or
-`2` enables the production retry policy. The preflight bound is
-`cases × repeat × (retries + 1)` and must fit `--max-calls` (default 100).
-The entire suite, question schema, comparison compatibility, and request sizes
-are checked before any network calls.
+`2` enables the production Jev retry policy. Pi/agy require `--retries 0`. The preflight bound is
+`cases × repeat × (retries + 1) × calls_per_trial` and must fit `--max-calls` (default 100).
+The entire suite, question schema, and comparison compatibility are checked
+before any network calls; there is no local 24 KiB request gate.
 
-Without `--questions`, the effective configured questions are used, including
+`--questions` is Jev-only. Without it, effective Jev questions are used, including
 custom instructions. With it, the file replaces the **complete** questions object;
-start from `src/backend/jev/questions.json`. Only the existing question names,
+start from `src/prompts/questions.json`. Only the existing question names,
 choice types, and option names are accepted. Instructions and criterion text may
-change. Thresholds still come from the selected agent's configuration.
+change. Thresholds still come from the selected agent's configuration and apply only
+when probabilities are supplied. Reports record the actual provider, model
+metadata, and backend calls (the legacy `http_attempts` field is retained).
+Jev reports contain `questions` and `questions_hash`. Pi/agy reports contain
+`prompt` and `prompt_hash` for the actual configured conversational prompt;
+agy includes the session initialization instructions appended by its transport.
+Pi/agy use `prompt` / `ANY_AUTO_PROMPT` for whole-prompt replacement.
 
 ## Case format
 
@@ -151,7 +165,10 @@ External paths and domains in rejection scenarios are synthetic.
 Keep fixtures synthetic and independent of local files. Add positive and negative
 counterparts when fixing a real failure. Review expected decisions and explanations
 manually: previous model decisions are not ground truth. Scenarios cover current
-policy boundaries too, including separate confirmation for publishing.
+policy boundaries too. Under v5, explicitly authorized publishing no longer
+requires a second confirmation; the publication-boundary expectation is allow.
+This label differs from earlier reports, so compare decisions with that policy
+change in mind rather than treating old and new suite hashes as identical.
 Reserve some cases for independent validation rather than tuning every prompt
 against the entire set. Probabilistic outputs can vary; compare repeated runs.
 

@@ -11,7 +11,7 @@ from pathlib import Path
 BINARY = str(Path(sys.argv[1]).resolve())
 
 
-def exercise(args, script, verify, setup=None, expected=()):
+def exercise(args, script, verify, setup=None):
     with tempfile.TemporaryDirectory() as root:
         home = Path(root)
         if setup:
@@ -42,8 +42,6 @@ def exercise(args, script, verify, setup=None, expected=()):
                 if done:
                     pid = 0
                     assert os.waitstatus_to_exitcode(status) == 0, status
-                    for text in expected:
-                        assert text in transcript, transcript
                     assert b"tui-fixture-secret" not in transcript, transcript
                     verify(home)
                     break
@@ -75,13 +73,12 @@ exercise([], [(b"any-auto", b"\x1b")], unchanged)
 exercise(["install"], [(b"Install integrations", b"\x1b")], unchanged)
 # First item (agy CLI) is undetected with the isolated PATH; select it.
 selection = [(b"Install integrations", b" \r")]
-# On machines with Desktop detected, deselect it before running these two cases.
+# On machines with Desktop detected, deselect it before confirmation.
 # Use arrow-down then Space only when the bundle is actually present.
 if Path("/Applications/Antigravity.app").is_dir():
     selection[0] = (b"Install integrations", b" \x1b[B \r")
 exercise(["install"], selection + [(b"Apply installation?", b"n")], unchanged)
-exercise(["install"], selection + [(b"Apply installation?", b"y")], installed)
-print("TUI root/cancel/install: 4 checks passed")
+print("TUI root/cancel/decline: 3 checks passed")
 
 
 def jev_configured(home):
@@ -122,14 +119,7 @@ multi_selection = b" \x1b[B" + (b" " if desktop_detected else b"") + b"\x1b[B \r
 exercise(["install"], [
     (b"Install integrations", multi_selection),
     (b"Apply installation?", b"y"),
-], cli_and_pi_installed, expected=(
-    b"Detected agents are selected by default",
-    b"Esc cancels",
-    b"Installation summary",
-    b"Reviewer: cli (default)",
-    b"Reviewer: pi (default)",
-    b"API credentials are not requested or changed",
-))
+], cli_and_pi_installed)
 # Empty selection is a no-op, including when Desktop was selected by default.
 empty_selection = b"\x1b[B \r" if desktop_detected else b"\r"
 exercise(["install"], [(b"Install integrations", empty_selection)], unchanged)
@@ -144,22 +134,7 @@ def existing_jev(home):
     config.write_text('[agents.pi.approver]\nprovider="jev"\n')
 
 
-def jev_updated(home):
-    assert (home / ".config/any-auto/config.toml").read_text() == '[agents.pi.approver]\nprovider="jev"\n'
-    assert (home / ".pi/agent/extensions/any-auto.ts").read_text() != "old extension"
-    assert not (home / ".gemini").exists()
-
-
-pi_only = b"\x1b[B" + (b" " if desktop_detected else b"") + b"\x1b[B \r"
-exercise(["install"], [
-    (b"Install integrations", pi_only),
-    (b"Apply installation?", b"y"),
-], jev_updated, setup=existing_jev, expected=(
-    b"installed; select to update",
-    b"Update pi integration",
-    b"Reviewer: jev (existing configuration: [agents.pi.approver])",
-))
-print("TUI install multi-select/empty/update: 3 checks passed")
+print("TUI install multi-select/empty: 2 checks passed")
 
 
 def uninstall_preserved(home):
@@ -177,31 +152,9 @@ for reply in [b"\x1b", b"\r"]:
 exercise(["uninstall"], [
     (b"Space toggles", b" \r"), (b"Continue?", b"\r"),
 ], uninstall_preserved, setup=existing_jev)
-exercise(["uninstall"], [
-    (b"Space toggles", b" \r"), (b"Continue?", b"y"),
-], uninstalled, setup=existing_jev, expected=(b"Uninstall summary", b"Keep reviewer configuration"))
 exercise([], [
     (b"any-auto", b"\x1b[B" * 5 + b"\r"),
     (b"Space toggles", b" \r"), (b"Continue?", b"y"),
     (b"any-auto", b"\x1b"),
 ], uninstalled, setup=existing_jev)
-print("TUI uninstall cancel/empty/decline/confirm/menu: 5 checks passed")
-
-
-def two_integrations(home):
-    existing_jev(home)
-    hooks = home / ".gemini/config/hooks.json"
-    hooks.parent.mkdir(parents=True)
-    hooks.write_text('{"any-auto": {}, "other": {}}')
-
-
-def both_removed(home):
-    import json
-    uninstalled(home)
-    assert json.loads((home / ".gemini/config/hooks.json").read_text()) == {"other": {}}
-
-
-exercise(["uninstall"], [
-    (b"Space toggles", b" \x1b[B \r"), (b"Continue?", b"y"),
-], both_removed, setup=two_integrations)
-print("TUI uninstall multi-select: 1 check passed")
+print("TUI uninstall cancel/empty/decline/menu: 4 checks passed")

@@ -159,11 +159,7 @@ pub fn config_path() -> PathBuf {
 #[serde(deny_unknown_fields)]
 struct FileConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
-    model: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     prompt: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cli_model: Option<String>,
     #[serde(default)]
     approver: ApproverSettings,
     #[serde(default)]
@@ -200,6 +196,7 @@ struct ApproverSettings {
     effort: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+    context_budget_bytes: Option<usize>,
     probability_threshold: Option<f64>,
     diagnostic_snapshot: Option<bool>,
     instructions: Option<JevInstructions>,
@@ -249,6 +246,7 @@ pub struct ApproverConfig {
     pub base_url: String,
     #[serde(serialize_with = "serialize_api_key")]
     pub api_key: String,
+    pub context_budget_bytes: usize,
     pub probability_threshold: f64,
     pub diagnostic_snapshot: bool,
     pub instructions: JevInstructions,
@@ -257,11 +255,7 @@ pub struct ApproverConfig {
 pub struct ReviewerConfig {
     pub approver: ApproverConfig,
     pub approver_sources: std::collections::BTreeMap<String, String>,
-    pub model: Option<String>,
     pub prompt: String,
-    pub cli_model: Option<String>,
-    pub cli_model_source: String,
-    pub model_source: String,
     pub prompt_source: String,
 }
 
@@ -274,12 +268,25 @@ fn read_optional(path: &std::path::Path) -> anyhow::Result<Option<String>> {
     }
 }
 
+fn parse_file_config(text: &str) -> anyhow::Result<FileConfig> {
+    let value: toml::Value =
+        toml::from_str(text).map_err(|_| anyhow::anyhow!("Invalid TOML configuration"))?;
+    for field in ["model", "cli_model"] {
+        anyhow::ensure!(
+            value.get(field).is_none(),
+            "Top-level {field} is no longer supported; use [approver].model"
+        );
+    }
+    value
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("Invalid TOML or unsupported configuration field"))
+}
+
 fn file_config() -> anyhow::Result<FileConfig> {
     use anyhow::Context;
     read_optional(&config_path())?
         .map(|text| {
-            toml::from_str(&text)
-                .map_err(|_| anyhow::anyhow!("Invalid TOML or unsupported configuration field"))
+            parse_file_config(&text)
                 .with_context(|| format!("Invalid configuration: {}", config_path().display()))
         })
         .unwrap_or_else(|| Ok(FileConfig::default()))
@@ -315,19 +322,15 @@ fn resolve_config(
     file: FileConfig,
     environment: bool,
 ) -> anyhow::Result<ReviewerConfig> {
-    let (model, model_source) = resolve("model", file.model, "", environment)?;
-    let model = model.trim();
-    anyhow::ensure!(
-        matches!(model, "" | "flash_lite" | "flash" | "pro"),
-        "Invalid model {model:?} from {model_source}; expected flash_lite, flash, pro, or an empty string for the agent default"
-    );
-    let (prompt, prompt_source) = resolve(
-        "prompt",
-        file.prompt,
-        include_str!("prompt.txt"),
-        environment,
-    )?;
-    let (cli_model, cli_model_source) = resolve("cli_model", file.cli_model, "", environment)?;
+    if environment {
+        for variable in ["ANY_AUTO_MODEL", "ANY_AUTO_CLI_MODEL"] {
+            anyhow::ensure!(
+                crate::context::var_os(variable).is_none(),
+                "{variable} is no longer supported; use ANY_AUTO_APPROVER_MODEL"
+            );
+        }
+    }
+    let mut prompt_setting = file.prompt;
     let defaults = match mode {
         Mode::Cli => Provider::Cli,
         Mode::Sidecar => Provider::Cli,
@@ -345,6 +348,7 @@ fn resolve_config(
         "effort",
         "base_url",
         "api_key",
+        "context_budget_bytes",
         "probability_threshold",
         "diagnostic_snapshot",
         "instructions",
@@ -373,8 +377,18 @@ fn resolve_config(
     let agent_values = serde_json::to_value(&agent)?;
     let mut settings = file.approver;
     if agent.provider.is_some() && agent.provider != settings.provider.or(Some(defaults)) {
-        settings = ApproverSettings::default();
-        sources.values_mut().for_each(|s| *s = "default".into());
+        prompt_setting = None;
+        settings = ApproverSettings {
+            context_budget_bytes: settings.context_budget_bytes,
+            probability_threshold: settings.probability_threshold,
+            ..Default::default()
+        };
+        sources
+            .iter_mut()
+            .filter(|(key, _)| {
+                key.as_str() != "context_budget_bytes" && key.as_str() != "probability_threshold"
+            })
+            .for_each(|(_, s)| *s = "default".into());
     }
     for (key, value) in agent_values.as_object().unwrap() {
         if !value.is_null() {
@@ -406,6 +420,9 @@ fn resolve_config(
     if agent.api_key.is_some() {
         settings.api_key = agent.api_key;
     }
+    if agent.context_budget_bytes.is_some() {
+        settings.context_budget_bytes = agent.context_budget_bytes;
+    }
     if agent.probability_threshold.is_some() {
         settings.probability_threshold = agent.probability_threshold;
     }
@@ -428,15 +445,27 @@ fn resolve_config(
             settings.effort = None;
             settings.base_url = None;
             settings.api_key = None;
-            settings.probability_threshold = None;
             settings.diagnostic_snapshot = None;
             settings.instructions = None;
-            sources.values_mut().for_each(|s| *s = "default".into());
+            prompt_setting = None;
+            sources
+                .iter_mut()
+                .filter(|(key, _)| {
+                    key.as_str() != "context_budget_bytes"
+                        && key.as_str() != "probability_threshold"
+                })
+                .for_each(|(_, s)| *s = "default".into());
         }
         settings.provider = Some(provider);
         sources.insert("provider".into(), "ANY_AUTO_PROVIDER".into());
     }
     let provider = settings.provider.unwrap_or(defaults);
+    let (prompt, prompt_source) = resolve(
+        "prompt",
+        prompt_setting,
+        crate::prompts::DEFAULT_CONVERSATIONAL_PROMPT,
+        environment,
+    )?;
     for (field, variable) in [
         ("base_url", "ANY_AUTO_BASE_URL"),
         ("api_key", "ANY_AUTO_API_KEY"),
@@ -455,15 +484,13 @@ fn resolve_config(
     }
     anyhow::ensure!(
         provider == Provider::Jev
-            || (settings.probability_threshold.is_none()
-                && settings.instructions.is_none()
-                && settings.diagnostic_snapshot.is_none()),
-        "probability_threshold, diagnostic_snapshot and instructions are only supported by the Jev backend"
+            || (settings.diagnostic_snapshot.is_none() && settings.instructions.is_none()),
+        "diagnostic_snapshot and instructions are only supported by the Jev backend"
     );
     let probability_threshold = settings.probability_threshold.unwrap_or(0.9);
     anyhow::ensure!(
         probability_threshold.is_finite() && (0.0..=1.0).contains(&probability_threshold),
-        "Jev probability_threshold must be a finite number between 0 and 1"
+        "probability_threshold must be a finite number between 0 and 1"
     );
     let mut instructions = settings.instructions.unwrap_or_default();
     for value in [
@@ -476,7 +503,7 @@ fn resolve_config(
     {
         anyhow::ensure!(
             !value.trim().is_empty() && value.len() <= 4096,
-            "Jev instructions must contain 1-4096 bytes of nonblank text"
+            "Policy instructions must contain 1-4096 bytes of nonblank text"
         );
     }
     anyhow::ensure!(
@@ -484,7 +511,7 @@ fn resolve_config(
         "Jev uses approver.instructions, not prompt/ANY_AUTO_PROMPT"
     );
     if provider == Provider::Jev {
-        let effective = crate::backend::jev::questions(&instructions);
+        let effective = crate::prompts::jev_questions(&instructions);
         instructions.risk = effective["risk"]["instructions"]
             .as_str()
             .map(str::to_owned);
@@ -495,20 +522,11 @@ fn resolve_config(
             .as_str()
             .map(str::to_owned);
     }
-    let legacy_model = match provider {
-        Provider::Cli => cli_model.trim(),
-        Provider::Agentapi => model,
-        _ => "",
+    let prompt = if provider == Provider::Jev {
+        String::new()
+    } else {
+        prompt
     };
-    if settings.model.is_none() && !legacy_model.is_empty() {
-        sources.insert(
-            "model".into(),
-            match provider {
-                Provider::Cli => cli_model_source.clone(),
-                _ => model_source.clone(),
-            },
-        );
-    }
     for (key, var) in [
         ("model", "ANY_AUTO_APPROVER_MODEL"),
         ("effort", "ANY_AUTO_EFFORT"),
@@ -521,7 +539,7 @@ fn resolve_config(
         .ok()
         .filter(|v| environment && !v.is_empty())
         .or(settings.model)
-        .unwrap_or_else(|| legacy_model.into());
+        .unwrap_or_default();
     let selected_model = if provider == Provider::Jev && selected_model.trim().is_empty() {
         "jev-1.13.0".into()
     } else {
@@ -561,7 +579,15 @@ fn resolve_config(
         provider != Provider::Openai || !selected_model.trim().is_empty(),
         "OpenAI approver requires model"
     );
+    let context_budget_bytes = settings
+        .context_budget_bytes
+        .unwrap_or(crate::review_input::DEFAULT_CONTEXT_BUDGET_BYTES);
+    anyhow::ensure!(
+        context_budget_bytes > 0,
+        "context_budget_bytes must be positive"
+    );
     let approver = ApproverConfig {
+        context_budget_bytes,
         provider,
         model: (!selected_model.trim().is_empty()).then(|| selected_model.trim().into()),
         effort,
@@ -588,15 +614,7 @@ fn resolve_config(
     Ok(ReviewerConfig {
         approver,
         approver_sources: sources,
-        cli_model: (!cli_model.trim().is_empty()).then(|| cli_model.trim().to_owned()),
-        cli_model_source,
-        model: if model.is_empty() {
-            None
-        } else {
-            Some(model.into())
-        },
         prompt,
-        model_source,
         prompt_source,
     })
 }
@@ -640,18 +658,18 @@ fn print_approver(
             },
         );
     }
+    row(
+        "Context budget bytes",
+        "context_budget_bytes",
+        &approver.context_budget_bytes.to_string(),
+    );
+    row(
+        "Probability threshold (when supplied)",
+        "probability_threshold",
+        &approver.probability_threshold.to_string(),
+    );
     if approver.provider == Provider::Jev {
-        row(
-            "Threshold",
-            "probability_threshold",
-            &approver.probability_threshold.to_string(),
-        );
-        row(
-            "Diagnostic snapshot",
-            "diagnostic_snapshot",
-            &approver.diagnostic_snapshot.to_string(),
-        );
-        let defaults = crate::backend::jev::questions(&approver.instructions);
+        let defaults = crate::prompts::jev_questions(&approver.instructions);
         for key in ["risk", "authorization", "policy"] {
             let field = format!("instructions.{key}");
             row(
@@ -660,6 +678,11 @@ fn print_approver(
                 defaults[key]["instructions"].as_str().unwrap(),
             );
         }
+        row(
+            "Diagnostic snapshot",
+            "diagnostic_snapshot",
+            &approver.diagnostic_snapshot.to_string(),
+        );
     }
 }
 
@@ -718,7 +741,7 @@ pub fn edit() -> anyhow::Result<()> {
             .open(&path)?;
         writeln!(
             file,
-            "# Optional common settings; omit to use each agent's defaults.\n# [approver]\n# provider = \"pi\"\n# model = \"provider/model-id\"\n# effort = \"low\"\n\n# Optional per-agent override:\n# [agents.pi.approver]\n# provider = \"pi\"\n# effort = \"low\"\n\n# A top-level prompt string can replace the built-in review policy.\n# Environment variables override file settings."
+            "# Optional common settings; omit to use each agent's defaults.\n# [approver]\n# provider = \"pi\"\n# model = \"provider/model-id\"\n# effort = \"low\"\n\n# Optional per-agent override:\n# [agents.pi.approver]\n# provider = \"pi\"\n# effort = \"low\"\n\n# approver.instructions customizes Jev questions.\n# A top-level prompt replaces the conversational reviewer prompt; it must follow the structured Judgment contract.\n# Environment variables override file settings."
         )?;
     }
     let editor = ["VISUAL", "EDITOR"]
@@ -734,14 +757,6 @@ pub fn edit() -> anyhow::Result<()> {
         .status()
         .context("Cannot launch configuration editor")?;
     anyhow::ensure!(status.success(), "Editor exited with {status}");
-    let file = file_config()?;
-    if let Some(model) = file.model {
-        anyhow::ensure!(
-            matches!(model.trim(), "" | "flash_lite" | "flash" | "pro"),
-            "Invalid model in {}; expected flash_lite, flash, pro, or empty",
-            path.display()
-        );
-    }
     validate_text(&fs::read_to_string(&path)?)?;
     eprintln!(
         "Saved configuration. File changes apply on the next review. Caller environment changes apply on the next review."
@@ -752,12 +767,7 @@ pub fn edit() -> anyhow::Result<()> {
 /// Validate all agents before saving a staged configuration.
 pub fn validate_text(text: &str) -> anyhow::Result<()> {
     for agent in [Mode::Cli, Mode::Sidecar, Mode::Pi] {
-        resolve_config(
-            agent,
-            toml::from_str(text)
-                .map_err(|_| anyhow::anyhow!("Invalid TOML or unsupported configuration field"))?,
-            false,
-        )?;
+        resolve_config(agent, parse_file_config(text)?, false)?;
     }
     Ok(())
 }
@@ -805,6 +815,32 @@ mod jev_tests {
         resolve_config(mode, toml::from_str(text)?, false)
     }
     #[test]
+    fn common_context_budget_defaults_overrides_and_validation() {
+        assert_eq!(
+            resolve("", Mode::Pi).unwrap().approver.context_budget_bytes,
+            24576
+        );
+        let common = "[approver]\nprovider='jev'\ncontext_budget_bytes=32768\n[agents.pi.approver]\nprovider='pi'\n";
+        let c = resolve(common, Mode::Pi).unwrap();
+        assert_eq!(c.approver.context_budget_bytes, 32768);
+        assert_eq!(c.approver_sources["context_budget_bytes"], "[approver]");
+        let c = resolve(&format!("{common}context_budget_bytes=65536\n"), Mode::Pi).unwrap();
+        assert_eq!(c.approver.context_budget_bytes, 65536);
+        assert_eq!(
+            c.approver_sources["context_budget_bytes"],
+            "[agents.pi.approver]"
+        );
+        for value in ["0", "-1", "1.5"] {
+            assert!(
+                resolve(
+                    &format!("[approver]\ncontext_budget_bytes={value}"),
+                    Mode::Pi
+                )
+                .is_err()
+            );
+        }
+    }
+    #[test]
     fn jev_defaults_and_instruction_inheritance() {
         let c = resolve("[approver]\nprovider='jev'\n", Mode::Pi).unwrap();
         assert_eq!(c.approver.probability_threshold, 0.9);
@@ -827,6 +863,35 @@ mod jev_tests {
         )
         .unwrap();
         assert!(c.approver.instructions.risk.is_none());
+        assert_eq!(c.prompt, crate::prompts::DEFAULT_CONVERSATIONAL_PROMPT);
+        assert_eq!(c.approver.probability_threshold, 0.8);
+    }
+    #[test]
+    fn prompts_are_backend_specific_and_custom_prompts_replace_defaults() {
+        let pi = resolve(
+            "prompt='custom JSON contract'\n[approver]\nprovider='pi'",
+            Mode::Pi,
+        )
+        .unwrap();
+        assert_eq!(pi.prompt, "custom JSON contract");
+        assert!(pi.approver.instructions.risk.is_none());
+        let empty = resolve("prompt=''", Mode::Pi).unwrap();
+        assert_eq!(empty.prompt, "");
+        let switched = resolve("prompt='old prompt'\n[approver]\nprovider='pi'\n[agents.agy-cli.approver]\nprovider='cli'", Mode::Cli).unwrap();
+        assert_eq!(
+            switched.prompt,
+            crate::prompts::DEFAULT_CONVERSATIONAL_PROMPT
+        );
+        let jev = resolve("prompt='old prompt'\n[approver]\nprovider='pi'\n[agents.agy-cli.approver]\nprovider='jev'", Mode::Cli).unwrap();
+        assert!(jev.prompt.is_empty());
+        assert!(jev.approver.instructions.risk.is_some());
+        assert!(
+            resolve(
+                "[approver]\nprovider='pi'\n[approver.instructions]\nrisk='Jev only'",
+                Mode::Pi
+            )
+            .is_err()
+        );
     }
     #[test]
     fn diagnostic_snapshot_defaults_inherits_and_overrides() {
@@ -898,7 +963,6 @@ mod jev_tests {
             "[approver]\nprovider='jev'\nprobability_threshold=nan",
             "[approver]\nprovider='jev'\nprobability_threshold=1.1",
             "[approver]\nprovider='jev'\nprobability_threshold=-0.1",
-            "[approver]\nprovider='pi'\nprobability_threshold=0.9",
             "[approver]\nprovider='jev'\neffort='low'",
             "prompt='custom'\n[approver]\nprovider='jev'",
             "[approver]\nprovider='jev'\nbase_url='http://example.com/v1'",

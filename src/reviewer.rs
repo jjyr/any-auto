@@ -1,5 +1,5 @@
 pub use crate::review_input::ReviewInput;
-use crate::{audit, config, parser};
+use crate::{audit, config};
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assessment {
-    pub outcome: String,
-    pub risk_level: String,
-    pub user_authorization: String,
+    pub outcome: crate::policy::Outcome,
+    pub risk_level: crate::policy::Risk,
+    pub user_authorization: crate::policy::Authorization,
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_stage: Option<String>,
@@ -19,113 +19,14 @@ pub struct Assessment {
 impl Assessment {
     pub fn deny(reason: impl std::fmt::Display) -> Self {
         Self {
-            outcome: "deny".into(),
-            risk_level: "high".into(),
-            user_authorization: "unknown".into(),
+            outcome: crate::policy::Outcome::Deny,
+            risk_level: crate::policy::Risk::High,
+            user_authorization: crate::policy::Authorization::Unknown,
             rationale: format!("Fail-closed: {reason}"),
             error_stage: Some("reviewer".into()),
             reviewer: None,
         }
     }
-}
-pub fn parse(raw: &str) -> Assessment {
-    if raw.trim().is_empty() {
-        return Assessment::deny("LLM review completed without an assessment payload");
-    }
-    let mut data = serde_json::from_str::<Value>(raw.trim()).ok();
-    if data.is_none() {
-        let fence = regex::Regex::new(r"(?s)```(?:json)?\s*(.*?)\s*```").unwrap();
-        if let Some(c) = fence.captures(raw) {
-            data = serde_json::from_str(c[1].trim()).ok();
-        }
-    }
-    if data.is_none()
-        && let (Some(a), Some(b)) = (raw.find('{'), raw.rfind('}'))
-        && a < b
-    {
-        data = serde_json::from_str(&raw[a..=b]).ok();
-    }
-    let Some(v) = data.filter(Value::is_object) else {
-        return Assessment::deny("Assessment payload was not valid JSON");
-    };
-    // An invalid, nonempty outcome must not fall back to a more permissive alias.
-    let outcome_value = v
-        .get("outcome")
-        .filter(|value| match value {
-            Value::Null => false,
-            Value::Bool(b) => *b,
-            Value::Number(n) => n.as_f64() != Some(0.0),
-            Value::String(s) => !s.is_empty(),
-            Value::Array(a) => !a.is_empty(),
-            Value::Object(o) => !o.is_empty(),
-        })
-        .or_else(|| v.get("decision"));
-    let outcome = outcome_value
-        .and_then(Value::as_str)
-        .unwrap_or("deny")
-        .trim()
-        .to_lowercase();
-    let outcome = if matches!(outcome.as_str(), "allow" | "deny") {
-        outcome
-    } else {
-        "deny".into()
-    };
-    let allow = outcome == "allow";
-    Assessment {
-        error_stage: None,
-        reviewer: None,
-        outcome,
-        risk_level: v["risk_level"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(if allow { "low" } else { "high" })
-            .trim()
-            .into(),
-        user_authorization: v["user_authorization"]
-            .as_str()
-            .filter(|s| !s.is_empty())
-            .unwrap_or("unknown")
-            .trim()
-            .into(),
-        rationale: v["rationale"]
-            .as_str()
-            .filter(|s| !s.trim().is_empty())
-            .or(v["reason"].as_str())
-            .filter(|s| !s.trim().is_empty())
-            .unwrap_or(if allow {
-                "Auto-review returned a low-risk allow decision."
-            } else {
-                "Auto-review returned a deny decision without a rationale."
-            })
-            .trim()
-            .into(),
-    }
-}
-pub fn script_content(cmd: &str, workspaces: &[Value]) -> String {
-    for command in parser::commands(cmd) {
-        for token in command.split_whitespace() {
-            // Inspect script candidates with the established 4000-character limit.
-            if ![
-                ".sh", ".py", ".js", ".ts", ".bash", ".zsh", ".rb", ".mjs", ".cjs",
-            ]
-            .iter()
-            .any(|ext| token.ends_with(ext))
-            {
-                continue;
-            }
-            let candidate = token.trim_matches(['\'', '"']);
-            for ws in workspaces.iter().filter_map(Value::as_str) {
-                if let Ok(bytes) = std::fs::read(PathBuf::from(ws).join(candidate)) {
-                    let content: String =
-                        String::from_utf8_lossy(&bytes).chars().take(4000).collect();
-                    return format!(
-                        "\n[Extracted Content of Script '{candidate}']:\n```\n{content}\n```\n"
-                    );
-                }
-            }
-        }
-    }
-    String::new()
 }
 pub struct Bridge {
     backend: Option<Box<dyn crate::backend::Backend>>,
@@ -179,7 +80,7 @@ impl Bridge {
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(
-                &serde_json::json!({"api_key_hash":format!("{:x}", Sha256::digest(config.approver.api_key.as_bytes())),"approver":config.approver,"prompt":config.prompt,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
+                &serde_json::json!({"api_key_hash":format!("{:x}", Sha256::digest(config.approver.api_key.as_bytes())),"approver":config.approver,"prompt":config.prompt,"policy_version":crate::policy::DECISION_POLICY_VERSION,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
             )?)
         );
         if self.fingerprint.as_ref() != Some(&fingerprint) {
@@ -218,7 +119,14 @@ impl Bridge {
             return Assessment::deny(format!("Invalid reviewer configuration: {e:#}"));
         }
 
-        let input = ReviewInput::from_request(req);
+        let input = ReviewInput::from_request_with_budget(
+            req,
+            self.settings
+                .as_ref()
+                .unwrap()
+                .approver
+                .context_budget_bytes,
+        );
         let id = &input.request_id;
         audit::record(
             id,
@@ -228,7 +136,15 @@ impl Bridge {
         );
         let backend = self.backend.as_mut().expect("configured backend");
         let mut assessment = match backend.review(&input).await {
-            Ok(value) => value,
+            Ok(value) => crate::policy::decide(
+                value,
+                &input,
+                self.settings
+                    .as_ref()
+                    .unwrap()
+                    .approver
+                    .probability_threshold,
+            ),
             Err(err) => Assessment::deny(format!("Approver review failed: {err:#}")),
         };
         self.conversation_id = backend.conversation_id().map(str::to_owned);

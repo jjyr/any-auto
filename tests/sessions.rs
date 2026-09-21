@@ -1,3 +1,4 @@
+mod support;
 use any_auto::{config::Mode, sessions::directory};
 use serde_json::{Value, json};
 use std::{
@@ -52,9 +53,9 @@ esac
 printf 'send %s %s\n' "$cid" "$tag" >> "$HOME/events"
 if [ -f "$HOME/fail-$cid" ]; then echo '{"error":"expired"}'; exit 1; fi
 if [ "$tag" = A1 ] && [ -f "$HOME/block-A1" ]; then read -r release < "$HOME/gate-A1"; fi
-outcome=allow
-[ "$tag" = DENY ] && outcome=deny
-response='"{\"outcome\":\"'"$outcome"'\",\"rationale\":\"'"$cid"'\"}"'
+policy=permitted
+[ "$tag" = DENY ] && policy=prohibited
+response='"{\"risk\":\"low\",\"authorization\":\"high\",\"policy\":\"'"$policy"'\",\"rationale\":\"'"$cid"'\"}"'
 printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$response"
 "#
             );
@@ -108,7 +109,7 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
-        writeln!(socket, "{}", json!({"action":"evaluate", "context":{"mode":mode,"instance":"default","environment":{"PATH":self.root.path().to_str().unwrap()}}, "mode":mode, "request_id":format!("{mode}-{tag}"), "user_session_id":session, "toolCall":{"name":"run_command","args":{"CommandLine":tag}}})).unwrap();
+        writeln!(socket, "{}", json!({"action":"evaluate", "context":{"mode":mode,"instance":"default","environment":{"PATH":self.root.path().to_str().unwrap()}}, "mode":mode, "request_id":format!("{mode}-{tag}"), "user_session_id":session, "authorization":support::authorization(),"toolCall":{"name":"run_command","args":{"CommandLine":tag}}})).unwrap();
         socket
     }
     fn finish(socket: UnixStream) -> Value {
@@ -119,10 +120,13 @@ printf '{"conversation_id":"%s","status":"SUCCESS","response":%s}\n' "$cid" "$re
     fn review(&self, mode: &str, session: Option<&str>) -> String {
         let a = Self::finish(self.ipc(mode, session, "B1"));
         assert_eq!(a["outcome"], "allow", "{a}");
-        a["rationale"].as_str().unwrap().to_owned()
+        a["reviewer"]["judgment"]["rationale"]
+            .as_str()
+            .unwrap()
+            .to_owned()
     }
     fn hook(&self, mode: &str, id: Option<&str>, key: &str, tag: &str) -> Value {
-        let mut input = json!({"toolCall":{"name":"run_command","args":{"CommandLine":tag}}});
+        let mut input = json!({"authorization":support::authorization(),"toolCall":{"name":"run_command","args":{"CommandLine":tag}}});
         if let Some(id) = id {
             input[key] = id.into();
         }

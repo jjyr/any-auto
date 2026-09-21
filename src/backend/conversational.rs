@@ -1,10 +1,6 @@
 //! Shared conversation lifecycle for the existing session transports.
 use super::{Backend, ReviewFuture, SessionTransport};
-use crate::{
-    audit,
-    config::ReviewerConfig,
-    reviewer::{self, ReviewInput},
-};
+use crate::{audit, config::ReviewerConfig, policy, reviewer::ReviewInput};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -83,7 +79,12 @@ impl Backend for ConversationalBackend {
                 let _ = std::fs::remove_file(&self.path);
                 result = self.send(&payload, id).await;
             }
-            result.map(|raw| reviewer::parse(&raw))
+            result.and_then(|raw| {
+                Ok(policy::Review {
+                    judgment: policy::parse(&raw)?,
+                    metadata: json!({}),
+                })
+            })
         })
     }
 }

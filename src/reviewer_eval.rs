@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeSet, VecDeque},
     fs::{File, OpenOptions},
     io::{Read, Seek, Write},
     os::unix::fs::OpenOptionsExt,
@@ -26,6 +26,9 @@ pub struct Options {
     pub suite: Vec<PathBuf>,
     #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(u32).range(1..=100))]
     pub repeat: u32,
+    /// Maximum simultaneous trials; each trial has an isolated reviewer session.
+    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
+    pub concurrency: u32,
     /// Full Jev questions JSON, replacing the effective configured rubric.
     #[arg(long)]
     pub questions: Option<PathBuf>,
@@ -35,7 +38,7 @@ pub struct Options {
     /// Previous report for the identical suite and repeat count.
     #[arg(long)]
     pub compare: Option<PathBuf>,
-    /// Maximum HTTP attempts, including the retry allowance.
+    /// Maximum backend calls, including initialization and retry allowance.
     #[arg(long, default_value_t = 100, value_parser = clap::value_parser!(u32).range(1..=10000))]
     pub max_calls: u32,
     /// Retry transient failures per evaluation; no retries by default.
@@ -79,20 +82,31 @@ struct Report {
     #[serde(default)]
     elapsed_ms: Option<u128>,
     suite_hash: String,
-    questions_hash: String,
-    questions: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    questions_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    questions: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_hash: Option<String>,
     provider: String,
     decision_policy_version: String,
     base_rubric_version: String,
     requested_model: Option<String>,
     probability_threshold: f64,
     repeat: u32,
+    #[serde(default = "default_concurrency")]
+    concurrency: u32,
     retries: u32,
     max_calls: u32,
     cases: Vec<Case>,
     trials: Vec<Trial>,
     summary: Value,
     comparison: Value,
+}
+fn default_concurrency() -> u32 {
+    1
 }
 fn hash(value: &impl Serialize) -> Result<String> {
     Ok(format!("{:x}", Sha256::digest(serde_json::to_vec(value)?)))
@@ -111,7 +125,7 @@ fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>> {
     Ok(bytes)
 }
 fn validate_questions(value: &Value) -> Result<()> {
-    let defaults = jev::questions(&config::JevInstructions::default());
+    let defaults = crate::prompts::jev_questions(&config::JevInstructions::default());
     ensure!(
         value.as_object().is_some_and(|v| v.len() == 3),
         "Questions must contain risk, authorization and policy"
@@ -197,7 +211,7 @@ fn load_cases(paths: &[PathBuf]) -> Result<Vec<Case>> {
     Ok(cases)
 }
 fn matches(case: &Case, assessment: &Assessment) -> bool {
-    assessment.outcome == case.expected.decision
+    assessment.outcome.as_str() == case.expected.decision
 }
 
 fn usage_summary(runs: &[&Trial]) -> Value {
@@ -242,7 +256,7 @@ fn usage_summary(runs: &[&Trial]) -> Value {
         "input_usage_samples":input_samples,"output_usage_samples":output_samples,
         "usage_samples":usage_samples,"usage_partial":usage_samples < expected_samples,
         "input_usage_partial":input_samples < expected_samples,"output_usage_partial":output_samples < expected_samples,
-        "http_attempts":http_attempts,"duration_ms":runs.iter().map(|r| r.duration_ms).sum::<u128>()})
+        "backend_calls":http_attempts,"http_attempts":http_attempts,"duration_ms":runs.iter().map(|r| r.duration_ms).sum::<u128>()})
 }
 
 fn summarize(cases: &[Case], trials: &[Trial]) -> Value {
@@ -257,13 +271,13 @@ fn summarize(cases: &[Case], trials: &[Trial]) -> Value {
         let mut decisions = BTreeSet::new();
         for run in &runs {
             if let Some(a) = &run.assessment {
-                decisions.insert(a.outcome.clone());
+                decisions.insert(a.outcome);
                 if case.expected.decision == "allow" {
                     expected_allow += 1;
-                    false_denials += usize::from(a.outcome == "deny");
+                    false_denials += usize::from(a.outcome == crate::policy::Outcome::Deny);
                 } else {
                     expected_deny += 1;
-                    false_allows += usize::from(a.outcome == "allow");
+                    false_allows += usize::from(a.outcome == crate::policy::Outcome::Allow);
                 }
             }
         }
@@ -337,7 +351,7 @@ fn comparison(current: &Report, baseline: &Report) -> Value {
         .elapsed_ms
         .zip(baseline.elapsed_ms)
         .map(|(now, before)| now as i128 - before as i128);
-    json!({"baseline_questions_hash":baseline.questions_hash,"baseline_model":baseline.requested_model,
+    json!({"baseline_questions_hash":baseline.questions_hash,"baseline_prompt_hash":baseline.prompt_hash,"baseline_model":baseline.requested_model,
         "baseline_threshold":baseline.probability_threshold,"baseline_decision_policy_version":baseline.decision_policy_version,"improved":improved,"regressed":regressed,"inconclusive":inconclusive, "token_delta":token_delta,"elapsed_ms_delta":elapsed_delta})
 }
 fn grouped(n: u64) -> String {
@@ -394,15 +408,17 @@ fn human_summary(report: &Report, output: &Path) -> String {
     );
     let _ = writeln!(
         text,
-        "Model: {} · Threshold: {}",
+        "Provider: {} · Model: {} · Threshold (when probabilities exist): {}",
+        report.provider,
         audit::safe_text(report.requested_model.as_deref().unwrap_or("default")),
         report.probability_threshold
     );
     let _ = writeln!(
         text,
-        "Scenarios: {} · Repeat: {} · Evaluations: {} / {}",
+        "Scenarios: {} · Repeat: {} · Concurrency: {} · Evaluations: {} / {}",
         report.cases.len(),
         report.repeat,
+        report.concurrency,
         report.trials.len(),
         report.cases.len() * report.repeat as usize
     );
@@ -519,28 +535,98 @@ fn checkpoint(file: &mut File, report: &Report) -> Result<()> {
     file.flush()?;
     Ok(())
 }
+async fn run_trial(
+    case: Case,
+    repetition: u32,
+    config: config::ReviewerConfig,
+    questions: Value,
+    retries: u32,
+    trial_dir: PathBuf,
+    mut cancelled: tokio::sync::watch::Receiver<bool>,
+) -> Trial {
+    let start = Instant::now();
+    let input = ReviewInput::from_fixture(&case.input, config.approver.context_budget_bytes);
+    let (result, events) = audit::capture(async {
+        let mut backend: Box<dyn Backend> = if config.approver.provider == config::Provider::Jev {
+            Box::new(jev::JevBackend::for_evaluation(config.clone(), questions, retries)?)
+        } else {
+            crate::backend::for_config(&config, trial_dir.join("workspace"),
+                trial_dir.join("reviewer_session.json"), "evaluation".into(), None, false)?
+        };
+        let deadline = if config.approver.provider == config::Provider::Cli {45} else {20};
+        tokio::select! {
+            biased;
+            _ = cancelled.changed() => Err(anyhow::anyhow!("Evaluation interrupted")),
+            result = tokio::time::timeout(std::time::Duration::from_secs(deadline), backend.review(&input)) =>
+                result.context("Evaluation deadline exceeded").and_then(|result| result),
+        }
+    }).await;
+    let (assessment, error, matched) = match result {
+        Ok(review) => {
+            let a = crate::policy::decide(review, &input, config.approver.probability_threshold);
+            let matched = matches(&case, &a);
+            (Some(a), None, Some(matched))
+        }
+        Err(error) => (None, Some(error.to_string()), None),
+    };
+    Trial {
+        case_id: case.id,
+        repetition,
+        duration_ms: start.elapsed().as_millis(),
+        assessment,
+        error,
+        matched,
+        events,
+    }
+}
+
 pub async fn run(options: Options) -> Result<()> {
     let started = Instant::now();
     let started_at = chrono::Utc::now().to_rfc3339();
     let cases = load_cases(&options.suite)?;
-    let upper_bound =
-        (cases.len() as u64) * u64::from(options.repeat) * (u64::from(options.retries) + 1);
+    let config = config::reviewer_config()?;
+    let provider = config.approver.provider;
+    ensure!(
+        matches!(
+            provider,
+            config::Provider::Jev | config::Provider::Pi | config::Provider::Cli
+        ),
+        "reviewer-eval supports Jev, Pi and agy CLI providers"
+    );
+    ensure!(
+        provider == config::Provider::Jev || (options.questions.is_none() && options.retries == 0),
+        "--questions and --retries are Jev-only; conversational backends use prompt/ANY_AUTO_PROMPT"
+    );
+    let calls_per_trial = if provider == config::Provider::Cli {
+        2
+    } else {
+        1
+    };
+    let upper_bound = (cases.len() as u64)
+        * u64::from(options.repeat)
+        * (u64::from(options.retries) + 1)
+        * calls_per_trial;
     ensure!(
         upper_bound <= u64::from(options.max_calls),
-        "Evaluation could make {upper_bound} HTTP calls, exceeding --max-calls {}",
+        "Evaluation could make {upper_bound} backend calls, exceeding --max-calls {}",
         options.max_calls
     );
-    let config = config::reviewer_config()?;
-    ensure!(
-        config.approver.provider == config::Provider::Jev,
-        "reviewer-eval currently requires a configured Jev provider; select its --agent or set ANY_AUTO_PROVIDER=jev"
-    );
-    let questions = match &options.questions {
-        Some(path) => serde_json::from_slice(&read_bounded(path, 64 * 1024)?)
-            .context("Invalid questions JSON")?,
-        None => jev::questions(&config.approver.instructions),
+    let questions = if provider == config::Provider::Jev {
+        let questions = match &options.questions {
+            Some(path) => serde_json::from_slice(&read_bounded(path, 64 * 1024)?)
+                .context("Invalid questions JSON")?,
+            None => crate::prompts::jev_questions(&config.approver.instructions),
+        };
+        validate_questions(&questions)?;
+        Some(questions)
+    } else {
+        None
     };
-    validate_questions(&questions)?;
+    let prompt = match provider {
+        config::Provider::Jev => None,
+        config::Provider::Cli => Some(crate::prompts::agy_session_prompt(&config.prompt)),
+        _ => Some(config.prompt.clone()),
+    };
     let suite_hash = hash(&cases)?;
     let baseline: Option<Report> = options
         .compare
@@ -559,25 +645,21 @@ pub async fn run(options: Options) -> Result<()> {
             Ok(report)
         })
         .transpose()?;
-    // Validate every encoded request before creating a report or making any calls.
-    for case in &cases {
-        let input = ReviewInput::from_fixture(&case.input);
+    if provider == config::Provider::Jev {
         ensure!(
-            serde_json::to_vec(
-                &json!({"model":config.approver.model,"state":input.state,"questions":questions})
-            )?
-            .len()
-                <= 24 * 1024,
-            "Case exceeds Jev request budget: {}",
-            case.id
+            !config.approver.api_key.trim().is_empty(),
+            "Jev API key is empty"
         );
+        jev::JevBackend::for_evaluation(
+            config.clone(),
+            questions.clone().unwrap(),
+            options.retries,
+        )?;
     }
-    let mut backend =
-        jev::JevBackend::for_evaluation(config.clone(), questions.clone(), options.retries)?;
-    ensure!(
-        !config.approver.api_key.trim().is_empty(),
-        "Jev API key is empty"
-    );
+    // Native reviewer state and workspaces are isolated from production and each other.
+    let evaluation_dir = tempfile::Builder::new()
+        .prefix("any-auto-eval-")
+        .tempdir()?;
     let mut output = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -591,14 +673,17 @@ pub async fn run(options: Options) -> Result<()> {
         completed: false,
         elapsed_ms: None,
         suite_hash,
-        questions_hash: hash(&questions)?,
+        questions_hash: questions.as_ref().map(hash).transpose()?,
         questions,
-        provider: "jev".into(),
-        decision_policy_version: jev::DECISION_POLICY_VERSION.into(),
-        base_rubric_version: jev::RUBRIC_VERSION.into(),
+        prompt_hash: prompt.as_ref().map(hash).transpose()?,
+        prompt,
+        provider: provider.as_str().into(),
+        decision_policy_version: crate::policy::DECISION_POLICY_VERSION.into(),
+        base_rubric_version: crate::policy::RUBRIC_VERSION.into(),
         requested_model: config.approver.model.clone(),
         probability_threshold: config.approver.probability_threshold,
         repeat: options.repeat,
+        concurrency: options.concurrency,
         retries: options.retries,
         max_calls: options.max_calls,
         cases,
@@ -609,53 +694,48 @@ pub async fn run(options: Options) -> Result<()> {
     checkpoint(&mut output, &report)?;
     let interrupted = tokio::signal::ctrl_c();
     tokio::pin!(interrupted);
+    let (cancel_tx, _) = tokio::sync::watch::channel(false);
     let mut cancelled = false;
-    'cases: for case in &report.cases {
-        for repetition in 1..=options.repeat {
-            let input = ReviewInput::from_fixture(&case.input);
-            let start = Instant::now();
-            let (result, events) = audit::capture(async {
-                tokio::select! {
-                    result = backend.review(&input) => result,
-                    _ = &mut interrupted => {
-                        cancelled = true;
-                        Err(anyhow::anyhow!("Evaluation interrupted"))
-                    }
-                }
-            })
-            .await;
-            let (assessment, error, matched) = match result {
-                Ok(a) => {
-                    let matched = matches(case, &a);
-                    (Some(a), None, Some(matched))
-                }
-                Err(error) => (None, Some(error.to_string()), None),
+    let mut pending: VecDeque<_> = report
+        .cases
+        .iter()
+        .flat_map(|case| (1..=options.repeat).map(move |repetition| (case.clone(), repetition)))
+        .collect();
+    let mut workers = tokio::task::JoinSet::new();
+    let mut next_trial = 0;
+    loop {
+        while !cancelled && workers.len() < options.concurrency as usize {
+            let Some((case, repetition)) = pending.pop_front() else {
+                break;
             };
-            eprintln!(
-                "{} {}/{}: {}",
-                case.id,
+            let trial_dir = evaluation_dir.path().join(format!("trial-{next_trial}"));
+            next_trial += 1;
+            workers.spawn(run_trial(
+                case,
                 repetition,
-                options.repeat,
-                if error.is_some() {
-                    "ERROR"
-                } else if matched == Some(true) {
-                    "PASS"
-                } else {
-                    "FAIL"
-                }
-            );
-            report.trials.push(Trial {
-                case_id: case.id.clone(),
-                repetition,
-                duration_ms: start.elapsed().as_millis(),
-                assessment,
-                error,
-                matched,
-                events,
-            });
-            checkpoint(&mut output, &report)?;
-            if cancelled {
-                break 'cases;
+                config.clone(),
+                report.questions.clone().unwrap_or(Value::Null),
+                options.retries,
+                trial_dir,
+                cancel_tx.subscribe(),
+            ));
+        }
+        if workers.is_empty() {
+            break;
+        }
+        tokio::select! {
+            biased;
+            _ = &mut interrupted, if !cancelled => {
+                cancelled = true;
+                let _ = cancel_tx.send(true);
+            }
+            result = workers.join_next() => {
+                let trial = result.expect("active workers").context("Evaluation worker failed")?;
+                eprintln!("{} {}/{}: {}", trial.case_id, trial.repetition, options.repeat,
+                    if trial.error.is_some() { "ERROR" } else if trial.matched == Some(true) { "PASS" } else { "FAIL" });
+                report.trials.push(trial);
+                report.trials.sort_by(|a,b| (&a.case_id,a.repetition).cmp(&(&b.case_id,b.repetition)));
+                checkpoint(&mut output, &report)?;
             }
         }
     }
@@ -728,8 +808,8 @@ mod tests {
     fn maintained_suites_and_rubric_validate() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/suites");
         let paths = vec![root.join("scenarios.jsonl")];
-        assert_eq!(load_cases(&paths).unwrap().len(), 21);
-        let mut questions = jev::questions(&config::JevInstructions::default());
+        assert_eq!(load_cases(&paths).unwrap().len(), 45);
+        let mut questions = crate::prompts::jev_questions(&config::JevInstructions::default());
         validate_questions(&questions).unwrap();
         questions["risk"]["criteria"]["surprise"] = json!("Invalid option");
         assert!(validate_questions(&questions).is_err());

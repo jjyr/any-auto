@@ -493,14 +493,67 @@ fn oversized_response_and_missing_usage_are_handled_without_fabrication() {
 }
 
 #[test]
-fn oversized_action_and_missing_credentials_fail_before_network() {
+fn codex_style_authorization_routes_reach_hook_decisions() {
+    let cases = [
+        ("high", "high", "permitted", "allow"),
+        ("high", "medium", "permitted", "allow"),
+        ("high", "low", "permitted", "deny"),
+        ("high", "high", "needs_confirmation", "deny"),
+        ("critical", "high", "permitted", "deny"),
+        ("medium", "low", "permitted", "allow"),
+        ("low", "unknown", "prohibited", "deny"),
+    ];
+    let replies = cases
+        .iter()
+        .map(|(risk, auth, policy, _)| {
+            let mut value = response();
+            for (question, selected) in
+                [("risk", risk), ("authorization", auth), ("policy", policy)]
+            {
+                value["answers"][question]["choice"] = json!(selected);
+                for (option, probability) in value["answers"][question]["probabilities"]
+                    .as_object_mut()
+                    .unwrap()
+                {
+                    *probability = json!(if option == selected { 1.0 } else { 0.0 });
+                }
+            }
+            Reply {
+                status: 200,
+                headers: String::new(),
+                body: value.to_string(),
+            }
+        })
+        .collect();
     let h = Harness::new();
-    h.configure("http://127.0.0.1:1/v1", "");
+    let (url, worker) = server(replies);
+    h.configure(&url, "probability_threshold=0.85\n");
+    for (i, (risk, auth, policy, expected)) in cases.into_iter().enumerate() {
+        let mut req = request();
+        req["conversationId"] = json!(format!("authorization-route-{i}"));
+        assert_eq!(
+            h.hook(&req, "fixture-key")["decision"],
+            expected,
+            "{risk}/{auth}/{policy}"
+        );
+    }
+    assert_eq!(worker.join().unwrap().len(), cases.len());
+}
+
+#[test]
+fn large_action_reaches_jev_unchanged_and_missing_credentials_fail_locally() {
+    let h = Harness::new();
+    let (url, worker) = server(vec![ok()]);
+    h.configure(&url, "");
     let mut req = request();
     req["toolCall"]["args"]["content"] = json!("x".repeat(25 * 1024));
     let result = h.hook(&req, "fixture-key");
-    assert_eq!(result["decision"], "deny");
-    assert!(result["reason"].as_str().unwrap().contains("24 KiB"));
+    assert_eq!(result["decision"], "allow");
+    let requests = worker.join().unwrap();
+    assert_eq!(
+        requests[0].1["state"]["action"]["args"]["content"],
+        req["toolCall"]["args"]["content"]
+    );
     let result = h.hook(&request(), "");
     assert_eq!(result["decision"], "deny");
     assert!(
@@ -509,7 +562,13 @@ fn oversized_action_and_missing_credentials_fail_before_network() {
             .unwrap()
             .contains("API key is empty")
     );
-    assert!(!h.logs().contains("backend_request"));
+    assert_eq!(
+        h.logs()
+            .lines()
+            .filter(|line| line.contains("\"event\":\"backend_request\""))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -645,7 +704,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
             .contains("Circuit breaker")
     );
     assert_eq!(worker.join().unwrap().len(), 3);
-    assert!(h.logs().contains("jev-decision-v4"));
+    assert!(h.logs().contains("policy-decision-v6"));
 }
 
 #[test]
@@ -967,6 +1026,8 @@ fn evaluation_case(id: &str, command: &str, decision: &str) -> Value {
 fn reviewer_eval_compares_real_decisions_without_production_state_or_execution() {
     let h = Harness::new();
     let mut denied = response();
+    denied["answers"]["risk"] = json!({"type":"choice","choice":"high","confidence":1.0,
+        "probabilities":{"low":0.0,"medium":0.0,"high":1.0,"critical":0.0,"unknown":0.0}});
     denied["answers"]["authorization"] = json!({"type":"choice","choice":"low","confidence":1.0,
         "probabilities":{"high":0.0,"medium":0.0,"low":1.0,"unknown":0.0}});
     let (url, worker) = server(vec![
@@ -991,7 +1052,7 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     let candidate = h.root.path().join("candidate.json");
     let questions = h.root.path().join("questions.json");
     let mut rubric: Value =
-        serde_json::from_str(include_str!("../src/backend/jev/questions.json")).unwrap();
+        serde_json::from_str(include_str!("../src/prompts/questions.json")).unwrap();
     rubric["authorization"]["instructions"] = json!("Candidate authorization instruction");
     fs::write(&questions, rubric.to_string()).unwrap();
     let base_args = [
@@ -1077,8 +1138,11 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     assert!(second["comparison"]["elapsed_ms_delta"].is_number());
     assert_eq!(second["summary"]["input_tokens"], 40);
     assert_eq!(second["summary"]["http_attempts"], 2);
-    assert_eq!(second["decision_policy_version"], "jev-decision-v4");
+    assert_eq!(second["decision_policy_version"], "policy-decision-v6");
     assert_ne!(first["questions_hash"], second["questions_hash"]);
+    assert!(second["questions"].is_object());
+    assert!(second.get("prompt").is_none());
+    assert!(second.get("prompt_hash").is_none());
     assert!(!second.to_string().contains("fixture-key"));
     let incompatible_output = h.root.path().join("incompatible.json");
     let out = h
@@ -1215,12 +1279,16 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let worker = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        let mut buffer = [0u8; 1];
-        stream.read_exact(&mut buffer).unwrap();
+        let mut streams = Vec::new();
+        for _ in 0..2 {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(5)))
+                .unwrap();
+            let mut buffer = [0u8; 1];
+            stream.read_exact(&mut buffer).unwrap();
+            streams.push(stream);
+        }
         ready_tx.send(()).unwrap();
         let _ = stop_rx.recv_timeout(Duration::from_secs(5));
     });
@@ -1237,6 +1305,8 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
             "reviewer-eval",
             "--agent",
             "pi",
+            "--concurrency",
+            "2",
             "--suite",
             suite.to_str().unwrap(),
             "--output",
@@ -1260,9 +1330,9 @@ fn reviewer_eval_ctrl_c_saves_partial_report_and_stops_pending_request() {
     assert!(!out.status.success());
     let result: Value = serde_json::from_slice(&fs::read(report).unwrap()).unwrap();
     assert_eq!(result["completed"], false);
-    assert_eq!(result["summary"]["http_attempts"], 1);
-    assert_eq!(result["summary"]["errors"], 1);
-    assert_eq!(result["trials"].as_array().unwrap().len(), 1);
+    assert_eq!(result["summary"]["http_attempts"], 2);
+    assert_eq!(result["summary"]["errors"], 2);
+    assert_eq!(result["trials"].as_array().unwrap().len(), 2);
     assert!(!h.root.path().join("logs").exists());
 }
 
