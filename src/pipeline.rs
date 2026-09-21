@@ -385,7 +385,7 @@ async fn evaluate_inner(
     }
     if let Err(e) = breaker
         .as_mut()
-        .map(|b| b.record(&assessment.outcome))
+        .map(|b| b.record(assessment.outcome.as_str()))
         .transpose()
     {
         *stage = "state_error";
@@ -396,8 +396,14 @@ async fn evaluate_inner(
             None,
         );
     }
-    let grants = (assessment.outcome == "allow").then(|| parser::overrides(tool, args));
-    result(&assessment.outcome, &assessment.rationale, tool, grants)
+    let grants = (assessment.outcome == crate::policy::Outcome::Allow)
+        .then(|| parser::overrides(tool, args));
+    result(
+        assessment.outcome.as_str(),
+        &assessment.rationale,
+        tool,
+        grants,
+    )
 }
 
 /// Agy's PostToolUse callback identifies a completed step, not an approval.

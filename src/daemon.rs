@@ -125,9 +125,6 @@ pub async fn review_traced(payload: &Value, id: &str) -> Result<Assessment> {
     let v = request(&config::socket_path(), &req, 25).await?;
     let a: Assessment =
         serde_json::from_value(v["assessment"].clone()).context("Invalid daemon assessment")?;
-    if !matches!(a.outcome.as_str(), "allow" | "deny" | "ask" | "force_ask") {
-        bail!("Invalid daemon decision");
-    }
     Ok(a)
 }
 struct State {

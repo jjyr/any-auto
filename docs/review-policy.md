@@ -58,9 +58,11 @@ Authorization: `high`, `medium`, `low`, `unknown`.
 Policy: `permitted`, `needs_confirmation`, `prohibited`, `unknown`.
 
 `Judgment` deserializes these fields into Rust enums. All four fields are required,
-rationale must be nonblank, and unknown fields or invalid enum values fail closed.
-JSON fenced in prose is accepted, but outcome/decision aliases and old
-`{"outcome":"allow"}` responses are rejected. Policy compliance includes exact
+rationale must be nonblank, and missing required fields or invalid enum values fail closed.
+Additional fields are ignored, including extra probability keys and model-produced
+outcome/decision fields; they never override the local decision. JSON fenced in prose
+is accepted. An old `{"outcome":"allow"}` response still fails because it lacks
+the required classifications. Policy compliance includes exact
 targets, scope, user restrictions and absolute prohibitions, not just risk.
 
 ## Local outcome rules
@@ -74,7 +76,13 @@ targets, scope, user restrictions and absolute prohibitions, not just risk.
 - An optional probability distribution adds threshold checks. Without it, no
   probability is fabricated and no probability gate is applied.
 
-A distribution, when present, must cover all options in all three dimensions.
+Internally, classifications, outcomes, rule IDs and check kinds use enums.
+Probability distributions use fixed-field structs; approval checks use typed
+structures. Jev responses deserialize into typed answers and directly construct
+the same Judgment. JSON is used at transport and diagnostic output boundaries.
+
+A distribution, when present, must cover all known options in all three dimensions.
+Additional fields are ignored.
 Values must be finite, within [0, 1], and agree with the selected maximum.
 Approximate sums are preserved, following the official TypeSafe SDK.
 

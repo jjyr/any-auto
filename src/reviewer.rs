@@ -7,9 +7,9 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Assessment {
-    pub outcome: String,
-    pub risk_level: String,
-    pub user_authorization: String,
+    pub outcome: crate::policy::Outcome,
+    pub risk_level: crate::policy::Risk,
+    pub user_authorization: crate::policy::Authorization,
     pub rationale: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_stage: Option<String>,
@@ -19,9 +19,9 @@ pub struct Assessment {
 impl Assessment {
     pub fn deny(reason: impl std::fmt::Display) -> Self {
         Self {
-            outcome: "deny".into(),
-            risk_level: "high".into(),
-            user_authorization: "unknown".into(),
+            outcome: crate::policy::Outcome::Deny,
+            risk_level: crate::policy::Risk::High,
+            user_authorization: crate::policy::Authorization::Unknown,
             rationale: format!("Fail-closed: {reason}"),
             error_stage: Some("reviewer".into()),
             reviewer: None,

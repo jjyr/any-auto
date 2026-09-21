@@ -211,7 +211,7 @@ fn load_cases(paths: &[PathBuf]) -> Result<Vec<Case>> {
     Ok(cases)
 }
 fn matches(case: &Case, assessment: &Assessment) -> bool {
-    assessment.outcome == case.expected.decision
+    assessment.outcome.as_str() == case.expected.decision
 }
 
 fn usage_summary(runs: &[&Trial]) -> Value {
@@ -271,13 +271,13 @@ fn summarize(cases: &[Case], trials: &[Trial]) -> Value {
         let mut decisions = BTreeSet::new();
         for run in &runs {
             if let Some(a) = &run.assessment {
-                decisions.insert(a.outcome.clone());
+                decisions.insert(a.outcome);
                 if case.expected.decision == "allow" {
                     expected_allow += 1;
-                    false_denials += usize::from(a.outcome == "deny");
+                    false_denials += usize::from(a.outcome == crate::policy::Outcome::Deny);
                 } else {
                     expected_deny += 1;
-                    false_allows += usize::from(a.outcome == "allow");
+                    false_allows += usize::from(a.outcome == crate::policy::Outcome::Allow);
                 }
             }
         }
