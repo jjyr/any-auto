@@ -12,12 +12,21 @@ fn executable(path: &Path, text: &str) {
     fs::write(path, text).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
 }
+// These tests create executable files and spawn children. Serialize their entire
+// lifecycle so a concurrent fork cannot temporarily retain another fixture's
+// writable executable descriptor before exec closes it (Linux ETXTBSY).
+static INSTALL_FIXTURE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct Fixture {
     dir: tempfile::TempDir,
     asset: String,
+    _guard: std::sync::MutexGuard<'static, ()>,
 }
 impl Fixture {
     fn new(system: &str, machine: &str, target: &str) -> Self {
+        let guard = INSTALL_FIXTURE
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let dir = tempfile::tempdir().unwrap();
         for name in ["bin", "assets", "payload", "home", "scratch"] {
             fs::create_dir(dir.path().join(name)).unwrap();
@@ -96,7 +105,11 @@ esac
                 .set_permissions(source.metadata().unwrap().permissions())
                 .unwrap();
         }
-        Self { dir, asset }
+        Self {
+            dir,
+            asset,
+            _guard: guard,
+        }
     }
     fn command(&self) -> Command {
         let mut c = Command::new(self.installed());
@@ -281,17 +294,6 @@ fn registry_installation_uses_cargo_and_original_root() {
     assert!(args.contains("--version\n=0.5.0\n"));
     assert!(!f.dir.path().join("requests").exists());
 }
-#[test]
-fn invalid_version_fails_before_download() {
-    let f = fixture();
-    assert!(
-        !f.run(f.command(), &["--version", "../bad"])
-            .status
-            .success()
-    );
-    assert!(!f.dir.path().join("requests").exists());
-}
-
 #[test]
 fn disabled_cli_is_preserved_when_updating_desktop() {
     let f = fixture();

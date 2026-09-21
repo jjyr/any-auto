@@ -289,3 +289,26 @@ pub async fn update(version: Option<&str>) -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::stable_version;
+
+    #[test]
+    fn versions_accept_stable_releases_and_reject_invalid_paths() {
+        for input in ["0.5.2", "v0.5.2"] {
+            assert_eq!(stable_version(input).unwrap(), "0.5.2");
+        }
+        for input in [
+            "../bad",
+            "v../bad",
+            "",
+            "1.2",
+            "01.2.3",
+            "1.2.3-beta",
+            "1.2.3/extra",
+        ] {
+            assert!(stable_version(input).is_err(), "{input}");
+        }
+    }
+}
