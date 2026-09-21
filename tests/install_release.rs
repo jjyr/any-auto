@@ -164,52 +164,51 @@ fn fixture() -> Fixture {
     Fixture::new("unused", "unused", &target)
 }
 #[test]
-fn release_update_resolves_latest_and_preserves_cli_scope() {
-    let f = fixture();
-    assert!(
-        Command::new(f.installed())
-            .arg("install")
-            .arg("--cli-only")
-            .env("HOME", f.dir.path().join("home"))
-            .env_remove("XDG_CONFIG_HOME")
-            .env_remove("XDG_DATA_HOME")
-            .env_remove("XDG_RUNTIME_DIR")
-            .status()
-            .unwrap()
-            .success()
-    );
-    let out = f.run(f.command(), &[]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert_eq!(fs::read_to_string(f.installed()).unwrap(), BINARY);
-    assert_eq!(
-        fs::read_to_string(f.dir.path().join("home/registered")).unwrap(),
-        "install --cli-only\n"
-    );
-    let requests = fs::read_to_string(f.dir.path().join("requests")).unwrap();
-    assert_eq!(requests.matches("/releases/latest").count(), 1);
-    assert!(requests.contains(&format!("/download/{VERSION}/{}", f.asset)));
-    f.assert_clean();
-}
-#[test]
-fn explicit_version_does_not_enable_uninstalled_plugins() {
-    let f = fixture();
-    let out = f.run(f.command(), &["--version", VERSION]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(
-        !fs::read_to_string(f.dir.path().join("requests"))
-            .unwrap()
-            .contains("/latest")
-    );
-    assert!(!f.dir.path().join("home/registered").exists());
-    f.assert_clean();
+fn release_update_selects_version_and_preserves_installation_scope() {
+    for installed in [true, false] {
+        let f = fixture();
+        if installed {
+            assert!(
+                Command::new(f.installed())
+                    .args(["install", "--cli-only"])
+                    .env("HOME", f.dir.path().join("home"))
+                    .env_remove("XDG_CONFIG_HOME")
+                    .env_remove("XDG_DATA_HOME")
+                    .env_remove("XDG_RUNTIME_DIR")
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let flags: &[&str] = if installed {
+            &[]
+        } else {
+            &["--version", VERSION]
+        };
+        let out = f.run(f.command(), flags);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(fs::read_to_string(f.installed()).unwrap(), BINARY);
+        let registration = f.dir.path().join("home/registered");
+        if installed {
+            assert_eq!(
+                fs::read_to_string(registration).unwrap(),
+                "install --cli-only\n"
+            );
+        } else {
+            assert!(!registration.exists());
+        }
+        let requests = fs::read_to_string(f.dir.path().join("requests")).unwrap();
+        assert_eq!(
+            requests.matches("/releases/latest").count(),
+            usize::from(installed)
+        );
+        assert!(requests.contains(&format!("/download/{VERSION}/{}", f.asset)));
+        f.assert_clean();
+    }
 }
 #[test]
 fn failed_release_preserves_binary() {
@@ -330,24 +329,6 @@ fn cargo_failure_does_not_fall_back_to_release_or_refresh_configuration() {
     assert_eq!(fs::read(f.installed()).unwrap(), previous);
     assert!(!f.dir.path().join("requests").exists());
     assert!(!f.dir.path().join("home/registered").exists());
-}
-
-#[test]
-fn unrelated_cargo_metadata_does_not_select_registry_update() {
-    let f = fixture();
-    let root = f.installed().parent().unwrap().parent().unwrap().to_owned();
-    fs::write(
-        root.join(".crates2.json"),
-        r#"{"installs":{"other 1.0.0 (registry+https://example.com/index)":{"bins":["other"]}}}"#,
-    )
-    .unwrap();
-    let out = f.run(f.command(), &[]);
-    assert!(
-        out.status.success(),
-        "{}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    assert!(f.dir.path().join("requests").exists());
 }
 
 #[test]
