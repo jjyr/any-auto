@@ -716,7 +716,7 @@ mod tests {
     fn maintained_suites_and_rubric_validate() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("evals/suites");
         let paths = vec![root.join("scenarios.jsonl")];
-        assert_eq!(load_cases(&paths).unwrap().len(), 21);
+        assert_eq!(load_cases(&paths).unwrap().len(), 45);
         let mut questions = jev::questions(&config::JevInstructions::default());
         validate_questions(&questions).unwrap();
         questions["risk"]["criteria"]["surprise"] = json!("Invalid option");

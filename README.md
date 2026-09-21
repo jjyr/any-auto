@@ -145,7 +145,7 @@ provider = "jev"
 base_url = "https://api.typesafe.ai/v1"
 api_key = "your-api-key"
 model = "jev-1.13.0"
-probability_threshold = 0.9
+probability_threshold = 0.85
 ```
 
 To configure only one agent, replace `[approver]` above with its table name:

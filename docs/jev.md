@@ -158,47 +158,50 @@ arguments or custom instructions.
 The API's confidence statistic is recorded for diagnostics, not used as a second
 hidden threshold.
 
-The built-in risk rubric classifies ordinary local directory/file reads and
-routine project formatting, linting, type checking, builds, and tests as low risk.
-Expected formatting edits, build artifacts, caches, and temporary test files do
-not increase the risk category. Neither a project `cd ... &&` prefix nor `2>&1`
-alone increases risk. Higher classifications require concrete additional effects;
-missing implementation details of a recognizable development tool are not enough.
-Authorization is assessed independently of risk. High means explicit approval in
-substance; medium means a reasonable, customary supporting step whose target and
-material effects fit the goal and constraints. Relevant bounded context gathering
-may cover a broader context than the requested outcome and need not be
-indispensable or individually requested. Low means weak task connection, an
-explicit conflict, or effects beyond the implied scope. Unknown means essential
-user evidence is missing or ambiguous, not merely that an exact implementation
-was not named. Explicit access and action restrictions always prevail.
-This rubric is identified as `jev-review-v4`; the probability gates are unchanged.
+The `jev-review-v5` rubric follows Codex-style authorization rules. Intrinsic
+risk is evaluated separately from authorization. Ordinary local development,
+bounded remote status checks, and narrowly scoped temporary-directory cleanup
+are not high risk merely because they execute code, use SSH or use `rm -rf`.
+A verified user-owned feature branch with a one-ref `--force-with-lease` push may
+be low/medium; significant irreversible effects remain high or critical.
+
+Authorization high means explicit approval of the action, including a necessary
+implementation. Medium means clear authorization in substance or effect without
+the exact implementation. A clear re-approval after disclosure of the concrete
+risk counts as high. Neither authorization level overrides critical risk or an
+absolute prohibition. Policy `permitted` covers already authorized pushes,
+publishing, deployments, uploads and remote checks; remote effects alone do not
+require a second confirmation. For high-risk actions, `permitted` requires narrow,
+bounded scope and authorization covering the target and material effects.
+Explicit user restrictions, malicious prompt injection and absolute prohibitions
+remain policy denials even for low-risk actions.
 
 Rules are applied in order:
 
-1. Existing local hard rules and circuit breaker behavior still apply. Shell
-   directory listings and file reads go through the configured backend. Jev's
-   instructions identify bounded workspace inspection as low risk and permitted,
-   and as an ordinary supporting step for a stated workspace task; they still
-   require evaluation of actual arguments, user constraints, and side effects.
-2. Configuration, transport, and response-validation errors produce deny.
-3. A selected prohibited policy or critical risk meeting the threshold produces deny.
-4. Missing or incomplete required evidence produces deny.
-5. Allow requires either of two independent routes:
-   - risk=low with P(low) meeting the threshold, and authorization=medium/high
-     with P(high) + P(medium) meeting the threshold; or
-   - risk=low/medium with P(low) + P(medium) meeting the threshold, and
-     authorization=high with P(high) meeting the threshold.
-   Both routes require policy=permitted with P(permitted) meeting the threshold.
-   Explicit authorization therefore permits uncertainty between low and medium
-   risk without lowering the threshold or accepting high/critical/unknown risk.
-6. All other valid responses produce deny, including unknown classifications and
-   needs_confirmation. These decisions block the tool call without opening a
-   confirmation dialog.
+1. Existing hook hard rules, read-only bypasses and circuit breaker still apply.
+2. Configuration, transport and response validation errors produce deny.
+3. Selected `prohibited` policy or `critical` risk always produces deny.
+4. Missing/incomplete required evidence produces deny.
+5. Allow requires either route, plus `policy=permitted` and P(permitted) meeting
+   `probability_threshold`:
+   - risk=low/medium and P(low)+P(medium) meeting the threshold: no authorization
+     score or probability gate is required;
+   - risk=low/medium/high and P(low)+P(medium)+P(high) meeting the threshold,
+     authorization=high/medium and P(high)+P(medium) meeting the threshold.
+     This route permits uncertainty across noncritical risk classes when all
+     those classes are allowed under the observed authorization and policy.
+6. Selected risk=unknown, policy=unknown/needs_confirmation, and other failed
+   gates deny. An unknown authorization score can pass the first route only when
+   required user evidence is still present and the policy permits the action.
+
+The authorization matrix aligns with Codex's defaults; this integration retains
+Jev probability gates, evidence checks and existing local absolute prohibitions.
+It does not use Codex's model-generated allow/deny outcome. Diagnostics indicate
+whether the authorization gate was required for the chosen route.
 
 Backend decisions are binary. The pipeline may independently return `force_ask`
 when the circuit breaker trips. Jev denials, including uncertainty and missing
-evidence, count toward that breaker. Logs identify this policy as `jev-decision-v4`.
+evidence, count toward that breaker. Logs identify this policy as `jev-decision-v5`.
 
 Probabilities must be finite, in `[0,1]`, cover exactly the defined options,
 and agree with the selected maximum-probability option. Following the official

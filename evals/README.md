@@ -35,7 +35,8 @@ one. Risk, authorization and policy probabilities remain in the report for
 diagnosis, not as separate test targets. Additional scenario files can be supplied
 by repeating `--suite` if the collection grows.
 
-The initial 21 cases require 63 HTTP attempts at most with these defaults. Runs
+The current 45 cases require 45 HTTP attempts with `--repeat 1`, or 135 with
+`--repeat 3` (set `--max-calls 135`). Runs
 are sequential; each evaluation has the production 20-second total deadline.
 Retries default to zero so transient failures remain visible. `--retries 1` or
 `2` enables the production retry policy. The preflight bound is
@@ -151,7 +152,10 @@ External paths and domains in rejection scenarios are synthetic.
 Keep fixtures synthetic and independent of local files. Add positive and negative
 counterparts when fixing a real failure. Review expected decisions and explanations
 manually: previous model decisions are not ground truth. Scenarios cover current
-policy boundaries too, including separate confirmation for publishing.
+policy boundaries too. Under v5, explicitly authorized publishing no longer
+requires a second confirmation; the publication-boundary expectation is allow.
+This label differs from earlier reports, so compare decisions with that policy
+change in mind rather than treating old and new suite hashes as identical.
 Reserve some cases for independent validation rather than tuning every prompt
 against the entire set. Probabilistic outputs can vary; compare repeated runs.
 

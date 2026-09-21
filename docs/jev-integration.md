@@ -324,3 +324,12 @@ budget. Oversized minimum-window inputs are sent without a local size rejection.
 Failed older agy history collection falls back to the latest valid message; agy
 retains transcript tail reading. Pi retains its existing incomplete-evidence handling. Transport does not trim again.
 See [current behavior](jev.md).
+
+## Codex-style authorization update
+
+The v5 runtime supersedes the original low/medium-only decision proposal above:
+low/medium risk has no authorization-score gate; high risk can pass with at
+least medium authorization and narrowly scoped permitted policy. Critical risk
+and absolute prohibitions remain denied. Jev probability and completeness gates
+remain. Already-authorized publishing/remote actions no longer require an extra
+confirmation solely because they leave local-development scope.

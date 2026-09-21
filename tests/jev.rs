@@ -493,6 +493,54 @@ fn oversized_response_and_missing_usage_are_handled_without_fabrication() {
 }
 
 #[test]
+fn codex_style_authorization_routes_reach_hook_decisions() {
+    let cases = [
+        ("high", "high", "permitted", "allow"),
+        ("high", "medium", "permitted", "allow"),
+        ("high", "low", "permitted", "deny"),
+        ("high", "high", "needs_confirmation", "deny"),
+        ("critical", "high", "permitted", "deny"),
+        ("medium", "low", "permitted", "allow"),
+        ("low", "unknown", "prohibited", "deny"),
+    ];
+    let replies = cases
+        .iter()
+        .map(|(risk, auth, policy, _)| {
+            let mut value = response();
+            for (question, selected) in
+                [("risk", risk), ("authorization", auth), ("policy", policy)]
+            {
+                value["answers"][question]["choice"] = json!(selected);
+                for (option, probability) in value["answers"][question]["probabilities"]
+                    .as_object_mut()
+                    .unwrap()
+                {
+                    *probability = json!(if option == selected { 1.0 } else { 0.0 });
+                }
+            }
+            Reply {
+                status: 200,
+                headers: String::new(),
+                body: value.to_string(),
+            }
+        })
+        .collect();
+    let h = Harness::new();
+    let (url, worker) = server(replies);
+    h.configure(&url, "probability_threshold=0.85\n");
+    for (i, (risk, auth, policy, expected)) in cases.into_iter().enumerate() {
+        let mut req = request();
+        req["conversationId"] = json!(format!("authorization-route-{i}"));
+        assert_eq!(
+            h.hook(&req, "fixture-key")["decision"],
+            expected,
+            "{risk}/{auth}/{policy}"
+        );
+    }
+    assert_eq!(worker.join().unwrap().len(), cases.len());
+}
+
+#[test]
 fn large_action_reaches_jev_unchanged_and_missing_credentials_fail_locally() {
     let h = Harness::new();
     let (url, worker) = server(vec![ok()]);
@@ -656,7 +704,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
             .contains("Circuit breaker")
     );
     assert_eq!(worker.join().unwrap().len(), 3);
-    assert!(h.logs().contains("jev-decision-v4"));
+    assert!(h.logs().contains("jev-decision-v5"));
 }
 
 #[test]
@@ -978,6 +1026,8 @@ fn evaluation_case(id: &str, command: &str, decision: &str) -> Value {
 fn reviewer_eval_compares_real_decisions_without_production_state_or_execution() {
     let h = Harness::new();
     let mut denied = response();
+    denied["answers"]["risk"] = json!({"type":"choice","choice":"high","confidence":1.0,
+        "probabilities":{"low":0.0,"medium":0.0,"high":1.0,"critical":0.0,"unknown":0.0}});
     denied["answers"]["authorization"] = json!({"type":"choice","choice":"low","confidence":1.0,
         "probabilities":{"high":0.0,"medium":0.0,"low":1.0,"unknown":0.0}});
     let (url, worker) = server(vec![
@@ -1088,7 +1138,7 @@ fn reviewer_eval_compares_real_decisions_without_production_state_or_execution()
     assert!(second["comparison"]["elapsed_ms_delta"].is_number());
     assert_eq!(second["summary"]["input_tokens"], 40);
     assert_eq!(second["summary"]["http_attempts"], 2);
-    assert_eq!(second["decision_policy_version"], "jev-decision-v4");
+    assert_eq!(second["decision_policy_version"], "jev-decision-v5");
     assert_ne!(first["questions_hash"], second["questions_hash"]);
     assert!(!second.to_string().contains("fixture-key"));
     let incompatible_output = h.root.path().join("incompatible.json");
