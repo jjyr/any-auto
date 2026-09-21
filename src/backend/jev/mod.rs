@@ -60,10 +60,8 @@ impl Choice {
                     .all(|v| v.is_finite() && (0.0..=1.0).contains(v)),
             "Invalid Jev probability or confidence"
         );
-        ensure!(
-            (self.probabilities.values().sum::<f64>() - 1.0).abs() <= 1e-3,
-            "Jev probabilities do not sum to one"
-        );
+        // Like the official SDK, preserve approximate distributions without
+        // checking their sum or renormalizing probabilities used by approval gates.
         let selected = self.p(&self.choice);
         ensure!(
             self.probabilities.values().all(|v| *v <= selected + 1e-9),
@@ -528,13 +526,39 @@ mod tests {
         );
     }
     #[test]
+    fn approximate_probability_sums_preserve_raw_approval_gates() {
+        for (question, option) in [
+            ("risk", "low"),
+            ("authorization", "medium"),
+            ("policy", "permitted"),
+        ] {
+            for delta in [-0.01, 0.01] {
+                let mut value = response();
+                let original = value["answers"][question]["probabilities"][option]
+                    .as_f64()
+                    .unwrap();
+                value["answers"][question]["probabilities"][option] = json!(original + delta);
+                let parsed = parse(value.clone()).unwrap();
+                assert_eq!(
+                    serde_json::to_value(&parsed.answers).unwrap(),
+                    value["answers"]
+                );
+                assert_eq!(
+                    decision(&parsed, &input(), 0.9).outcome,
+                    if delta < 0.0 { "deny" } else { "allow" },
+                    "{question}: delta={delta}"
+                );
+            }
+        }
+    }
+    #[test]
     fn malformed_answers_fail_strict_validation() {
         for (pointer, bad) in [
             ("/answers/risk/type", json!("noul")),
             ("/answers/risk/choice", json!("allow")),
             ("/answers/risk/choice", json!("high")),
             ("/answers/risk/probabilities/low", json!(1.2)),
-            ("/answers/risk/probabilities/low", json!(0.8)),
+            ("/answers/risk/probabilities/low", json!(-0.1)),
             ("/answers/risk/probabilities/low", Value::Null),
             ("/answers/risk/confidence", json!(-0.1)),
             ("/answers/policy", Value::Null),

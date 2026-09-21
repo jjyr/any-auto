@@ -183,8 +183,10 @@ Backend decisions are binary. The pipeline may independently return `force_ask`
 when the circuit breaker trips. Jev denials, including uncertainty and missing
 evidence, count toward that breaker. Logs identify this policy as `jev-decision-v4`.
 
-Probabilities must be finite, in `[0,1]`, cover exactly the defined options, sum to
-one within `1e-3`, and agree with the selected maximum-probability option. Each
+Probabilities must be finite, in `[0,1]`, cover exactly the defined options,
+and agree with the selected maximum-probability option. Following the official
+Python SDK, probability sums are not validated and values are not renormalized;
+approval thresholds use the original API probabilities. Each
 required answer must have type=choice and valid confidence. Malformed answers do
 not fall through to allow. Missing or invalid usage is recorded as unknown rather
 than zero tokens; it does not invalidate an otherwise valid classification.
