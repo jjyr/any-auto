@@ -29,7 +29,7 @@ enum Commands {
     HumanResult,
     /// Check agent detection and local reviewer readiness without model requests.
     Doctor,
-    /// Evaluate fixture suites without executing actions or touching approval state (Jev).
+    /// Evaluate fixture suites without executing actions or touching approval state.
     ReviewerEval {
         #[command(flatten)]
         options: any_auto::reviewer_eval::Options,

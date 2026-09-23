@@ -1,7 +1,7 @@
 # Reviewer evaluation suites
 
 These fixtures exercise the reviewer, not the tools described in their inputs.
-`any-auto reviewer-eval` supports Jev, Pi and agy CLI and uses their production
+`any-auto reviewer-eval` supports Jev, Pi, agy CLI and OpenAI Responses and uses their production
 transports, typed response validation, evidence checks and shared local policy.
 Conversational trials use fresh isolated sessions so scenarios cannot contaminate
 each other. Native client authentication and caches are still used.
@@ -11,7 +11,7 @@ audit log, or usage statistics are touched.
 ## Run and compare
 
 Use a configured agent and its existing credentials. Override the provider for a
-single run with `ANY_AUTO_PROVIDER=jev`, `pi`, or `cli` (agy):
+single run with `ANY_AUTO_PROVIDER=jev`, `pi`, `cli` (agy), or `openai`:
 
 ```sh
 any-auto reviewer-eval --agent agy-cli \
@@ -41,12 +41,12 @@ one. Risk, authorization and policy probabilities remain in the report for
 diagnosis, not as separate test targets. Additional scenario files can be supplied
 by repeating `--suite` if the collection grows.
 
-The 45 cases require 45 review calls for Jev/Pi with `--repeat 1`. Agy uses
+The 45 cases require 45 review calls for Jev/Pi/OpenAI with `--repeat 1`. Agy uses
 90 calls because each fresh session requires initialization and review. Multiply
-by the repeat count; increase `--max-calls` accordingly. Runs are sequential by default; `--concurrency` permits parallel trials. Jev/Pi trials have a 20-second deadline; agy allows 45 seconds total
+by the repeat count; increase `--max-calls` accordingly. Runs are sequential by default; `--concurrency` permits parallel trials. Jev/Pi/OpenAI trials have a 20-second deadline; agy allows 45 seconds total
 for its two calls (each native call still has a 20-second deadline).
 Retries default to zero so transient failures remain visible. `--retries 1` or
-`2` enables the production Jev retry policy. Pi/agy require `--retries 0`. The preflight bound is
+`2` enables the production Jev retry policy. Pi/agy/OpenAI require `--retries 0`. The preflight bound is
 `cases × repeat × (retries + 1) × calls_per_trial` and must fit `--max-calls` (default 100).
 The entire suite, question schema, and comparison compatibility are checked
 before any network calls; there is no local 24 KiB request gate.
@@ -58,10 +58,10 @@ choice types, and option names are accepted. Instructions and criterion text may
 change. Thresholds still come from the selected agent's configuration and apply only
 when probabilities are supplied. Reports record the actual provider, model
 metadata, and backend calls (the legacy `http_attempts` field is retained).
-Jev reports contain `questions` and `questions_hash`. Pi/agy reports contain
+Jev reports contain `questions` and `questions_hash`. Pi/agy/OpenAI reports contain
 `prompt` and `prompt_hash` for the actual configured conversational prompt;
 agy includes the session initialization instructions appended by its transport.
-Pi/agy use `prompt` / `ANY_AUTO_PROMPT` for whole-prompt replacement.
+Pi/agy/OpenAI use `prompt` / `ANY_AUTO_PROMPT` for whole-prompt replacement.
 
 ## Case format
 
@@ -174,3 +174,25 @@ against the entire set. Probabilistic outputs can vary; compare repeated runs.
 
 Standard automated tests use a local mock service and require no Jev key. Live
 suite runs are explicit and use the selected agent's configured provider account.
+
+## Local OpenAI-compatible Responses server
+
+The server must support `/v1/responses`; Chat Completions alone is insufficient.
+For example, with a recent llama-server:
+
+```sh
+ANY_AUTO_PROVIDER=openai \
+ANY_AUTO_BASE_URL=http://127.0.0.1:8080/v1 \
+ANY_AUTO_API_KEY=local \
+ANY_AUTO_APPROVER_MODEL='Qwen/Qwen3-0.6B-GGUF:Q8_0' \
+cargo run -- reviewer-eval --agent pi \
+  --suite evals/suites/scenarios.jsonl --repeat 1 \
+  --output /tmp/local-model-eval.json
+```
+
+Use your server's model ID and authentication key (a nonempty placeholder for
+servers without authentication). Each trial uses a fresh Responses session and
+one request, with no `previous_response_id`. The production transport still sends
+`store=true`; the server must accept it. This does not test stored-conversation
+support. The evaluator uses the shared typed assessment parser and decision policy;
+invalid model output is reported as an error, not a correct rejection.
