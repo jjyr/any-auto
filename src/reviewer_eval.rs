@@ -230,6 +230,8 @@ fn usage_summary(runs: &[&Trial]) -> Value {
         // Prefer per-attempt usage, including retries. Older reports use backend_response.
         let event_name = if run.events.iter().any(|e| e["event"] == "jev_attempt_usage") {
             "jev_attempt_usage"
+        } else if run.events.iter().any(|e| e["event"] == "backend_usage") {
+            "backend_usage"
         } else {
             "backend_response"
         };
@@ -589,9 +591,12 @@ pub async fn run(options: Options) -> Result<()> {
     ensure!(
         matches!(
             provider,
-            config::Provider::Jev | config::Provider::Pi | config::Provider::Cli
+            config::Provider::Jev
+                | config::Provider::Pi
+                | config::Provider::Cli
+                | config::Provider::Openai
         ),
-        "reviewer-eval supports Jev, Pi and agy CLI providers"
+        "reviewer-eval supports Jev, Pi, agy CLI and OpenAI providers"
     );
     ensure!(
         provider == config::Provider::Jev || (options.questions.is_none() && options.retries == 0),
@@ -790,6 +795,14 @@ mod tests {
             json!({"event":"backend_request"}),
             json!({"event":"jev_attempt_usage","data":{"usage_delta":{"input_tokens":7,"output_tokens":null}}}),
         ]);
+        let failed_response = trial(vec![
+            json!({"event":"backend_request"}),
+            json!({"event":"backend_usage","data":{"usage_delta":{"input_tokens":10,"output_tokens":5}}}),
+            json!({"event":"backend_error","data":{"error":"OpenAI response incomplete or failed"}}),
+        ]);
+        let failed_usage = usage_summary(&[&failed_response]);
+        assert_eq!(failed_usage["total_tokens"], 15);
+        assert_eq!(failed_usage["usage_partial"], false);
         let usage = usage_summary(&[&old, &partial]);
         assert_eq!(usage["total_tokens"], 1027);
         assert_eq!(usage["duration_ms"], 2400);
