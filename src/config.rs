@@ -196,6 +196,7 @@ struct ApproverSettings {
     effort: Option<String>,
     base_url: Option<String>,
     api_key: Option<String>,
+    request_timeout: Option<u64>,
     context_budget_bytes: Option<usize>,
     probability_threshold: Option<f64>,
     diagnostic_snapshot: Option<bool>,
@@ -246,6 +247,7 @@ pub struct ApproverConfig {
     pub base_url: String,
     #[serde(serialize_with = "serialize_api_key")]
     pub api_key: String,
+    pub request_timeout: u64,
     pub context_budget_bytes: usize,
     pub probability_threshold: f64,
     pub diagnostic_snapshot: bool,
@@ -348,6 +350,7 @@ fn resolve_config(
         "effort",
         "base_url",
         "api_key",
+        "request_timeout",
         "context_budget_bytes",
         "probability_threshold",
         "diagnostic_snapshot",
@@ -379,6 +382,7 @@ fn resolve_config(
     if agent.provider.is_some() && agent.provider != settings.provider.or(Some(defaults)) {
         prompt_setting = None;
         settings = ApproverSettings {
+            request_timeout: settings.request_timeout,
             context_budget_bytes: settings.context_budget_bytes,
             probability_threshold: settings.probability_threshold,
             ..Default::default()
@@ -386,7 +390,9 @@ fn resolve_config(
         sources
             .iter_mut()
             .filter(|(key, _)| {
-                key.as_str() != "context_budget_bytes" && key.as_str() != "probability_threshold"
+                key.as_str() != "request_timeout"
+                    && key.as_str() != "context_budget_bytes"
+                    && key.as_str() != "probability_threshold"
             })
             .for_each(|(_, s)| *s = "default".into());
     }
@@ -420,6 +426,9 @@ fn resolve_config(
     if agent.api_key.is_some() {
         settings.api_key = agent.api_key;
     }
+    if agent.request_timeout.is_some() {
+        settings.request_timeout = agent.request_timeout;
+    }
     if agent.context_budget_bytes.is_some() {
         settings.context_budget_bytes = agent.context_budget_bytes;
     }
@@ -451,7 +460,8 @@ fn resolve_config(
             sources
                 .iter_mut()
                 .filter(|(key, _)| {
-                    key.as_str() != "context_budget_bytes"
+                    key.as_str() != "request_timeout"
+                        && key.as_str() != "context_budget_bytes"
                         && key.as_str() != "probability_threshold"
                 })
                 .for_each(|(_, s)| *s = "default".into());
@@ -586,7 +596,10 @@ fn resolve_config(
         context_budget_bytes > 0,
         "context_budget_bytes must be positive"
     );
+    let request_timeout = settings.request_timeout.unwrap_or(20);
+    anyhow::ensure!(request_timeout > 0, "request_timeout must be positive");
     let approver = ApproverConfig {
+        request_timeout,
         context_budget_bytes,
         provider,
         model: (!selected_model.trim().is_empty()).then(|| selected_model.trim().into()),
@@ -634,6 +647,11 @@ fn print_approver(
         }
     };
     row("Approver", "provider", approver.provider.as_str());
+    row(
+        "Timeout",
+        "request_timeout",
+        &format!("{}s", approver.request_timeout),
+    );
     row(
         "Model",
         "model",
@@ -810,6 +828,29 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod jev_tests {
+    #[test]
+    fn request_timeout_defaults_overrides_and_validation() {
+        assert_eq!(resolve("", Mode::Cli).unwrap().approver.request_timeout, 20);
+        let inherited = resolve(
+            "[approver]\nrequest_timeout=60\n[agents.agy-cli.approver]\nprovider='pi'",
+            Mode::Cli,
+        )
+        .unwrap();
+        assert_eq!(inherited.approver.request_timeout, 60);
+        assert_eq!(inherited.approver_sources["request_timeout"], "[approver]");
+        assert_eq!(
+            resolve(
+                "[approver]\nrequest_timeout=60\n[agents.agy-cli.approver]\nrequest_timeout=30",
+                Mode::Cli
+            )
+            .unwrap()
+            .approver
+            .request_timeout,
+            30
+        );
+        assert!(resolve("[approver]\nrequest_timeout=0", Mode::Cli).is_err());
+    }
+
     use super::*;
     fn resolve(text: &str, mode: Mode) -> anyhow::Result<ReviewerConfig> {
         resolve_config(mode, toml::from_str(text)?, false)

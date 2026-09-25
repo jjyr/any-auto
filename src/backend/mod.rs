@@ -42,7 +42,9 @@ pub fn for_config(
 ) -> Result<Box<dyn Backend>> {
     let transport: Box<dyn SessionTransport> = match config.approver.provider {
         Provider::Jev => return Ok(Box::new(jev::JevBackend::new(config.clone())?)),
-        Provider::Agentapi => Box::new(AgentApiBackend),
+        Provider::Agentapi => Box::new(AgentApiBackend {
+            request_timeout: config.approver.request_timeout,
+        }),
         Provider::Cli => Box::new(AgyBackend::new(workspace, config.clone())),
         Provider::Pi => Box::new(pi::PiBackend::new(workspace, config.clone())),
         Provider::Openai => Box::new(openai::OpenAiBackend::new(workspace, config.clone())),

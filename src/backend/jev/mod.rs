@@ -95,7 +95,10 @@ pub struct JevBackend {
 impl JevBackend {
     pub fn new(config: ReviewerConfig) -> Result<Self> {
         Ok(Self {
-            client: client::JevClient::new(&config.approver.base_url)?,
+            client: client::JevClient::new(
+                &config.approver.base_url,
+                config.approver.request_timeout,
+            )?,
             evaluation_questions: None,
             config,
         })

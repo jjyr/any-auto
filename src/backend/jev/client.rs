@@ -6,7 +6,6 @@ use serde_json::{Value, json};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
 
-const BUDGET: Duration = Duration::from_secs(20);
 const MAX_BODY: usize = 4 * 1024 * 1024;
 
 pub(crate) fn endpoint(base: &str) -> Result<Url> {
@@ -29,6 +28,7 @@ pub(crate) fn endpoint(base: &str) -> Result<Url> {
 
 pub struct JevClient {
     http: Client,
+    request_timeout: Duration,
     url: Url,
     pub(crate) retries: u32,
     pub(crate) collect_usage: bool,
@@ -49,7 +49,7 @@ impl Failure {
     }
 }
 impl JevClient {
-    pub fn new(base: &str) -> Result<Self> {
+    pub fn new(base: &str, request_timeout: u64) -> Result<Self> {
         // Resolve proxies from this caller's scoped context, not the first daemon starter.
         let variable = |lower: &str, upper: &str| {
             crate::context::var(lower)
@@ -80,6 +80,7 @@ impl JevClient {
         }
         Ok(Self {
             url: endpoint(base)?,
+            request_timeout: Duration::from_secs(request_timeout),
             retries: 2,
             collect_usage: false,
             http: builder
@@ -162,7 +163,7 @@ impl JevClient {
         );
     }
     pub async fn evaluate(&self, key: &str, body: &Value, id: &str) -> Result<Value> {
-        let deadline = Instant::now() + BUDGET;
+        let deadline = Instant::now() + self.request_timeout;
         tokio::time::timeout_at(deadline, async {
             for attempt in 0..=self.retries {
                 audit::record(id, "backend_request", json!({"provider":"jev", "attempt":attempt + 1}));
