@@ -35,10 +35,8 @@ impl OpenAiBackend {
             "API base URL must not contain credentials, query, or fragment"
         );
         ensure!(
-            url.scheme() == "https"
-                || (url.scheme() == "http"
-                    && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))),
-            "API URL requires HTTPS except for localhost"
+            matches!(url.scheme(), "http" | "https"),
+            "API URL must use HTTP or HTTPS"
         );
         let mut body = json!({"model":self.config.approver.model,"instructions":self.config.prompt,"input":payload,"tools":[],"store":true});
         if let Some(effort) = &self.config.approver.effort {

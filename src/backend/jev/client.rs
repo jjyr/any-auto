@@ -19,10 +19,8 @@ pub(crate) fn endpoint(base: &str) -> Result<Url> {
         "Jev base URL must not contain credentials, query, or fragment"
     );
     ensure!(
-        url.scheme() == "https"
-            || (url.scheme() == "http"
-                && matches!(url.host_str(), Some("localhost" | "127.0.0.1" | "[::1]"))),
-        "Jev requires HTTPS except for loopback test servers"
+        matches!(url.scheme(), "http" | "https"),
+        "Jev base URL must use HTTP or HTTPS"
     );
     ensure!(url.host_str().is_some(), "Jev base URL requires a host");
     url.set_path(&format!("{}/systemone", url.path().trim_end_matches('/')));
@@ -210,14 +208,24 @@ mod tests {
             "https://gateway.example/typesafe/v1/systemone"
         );
         for url in [
-            "http://example.com/v1",
+            "ftp://example.com/v1",
             "https://secret@example.com/v1",
             "https://example.com/?key=secret",
             "https://example.com/#fragment",
         ] {
             assert!(endpoint(url).is_err());
         }
-        assert!(endpoint("http://[::1]:8000/v1").is_ok());
+        for base in [
+            "http://example.com/v1",
+            "http://server.tailnet.ts.net:8000/v1",
+            "http://100.64.0.1:8000/v1",
+            "http://[::1]:8000/v1",
+        ] {
+            assert_eq!(
+                endpoint(base).unwrap().as_str(),
+                format!("{base}/systemone")
+            );
+        }
         assert_eq!(retry_after("123"), Some(Duration::from_secs(123)));
         assert!(retry_after("Wed, 21 Oct 2015 07:28:00 GMT").is_some());
     }

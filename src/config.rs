@@ -965,7 +965,7 @@ mod jev_tests {
             "[approver]\nprovider='jev'\nprobability_threshold=-0.1",
             "[approver]\nprovider='jev'\neffort='low'",
             "prompt='custom'\n[approver]\nprovider='jev'",
-            "[approver]\nprovider='jev'\nbase_url='http://example.com/v1'",
+            "[approver]\nprovider='jev'\nbase_url='ftp://example.com/v1'",
             "[approver]\nprovider='jev'\napi_key='bad\nkey'",
             "[approver]\nprovider='jev'\n[approver.instructions]\nrisk=' '",
             "[approver]\nprovider='jev'\n[approver.instructions]\nunknown='bad'",
