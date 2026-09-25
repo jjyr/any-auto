@@ -540,16 +540,21 @@ fn checkpoint(file: &mut File, report: &Report) -> Result<()> {
     file.flush()?;
     Ok(())
 }
+struct TrialOptions {
+    retries: u32,
+    deadline: u64,
+}
+
 async fn run_trial(
     case: Case,
     repetition: u32,
     config: config::ReviewerConfig,
     questions: Value,
-    retries: u32,
-    deadline: u64,
+    options: TrialOptions,
     trial_dir: PathBuf,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
 ) -> Trial {
+    let TrialOptions { retries, deadline } = options;
     let start = Instant::now();
     let input = ReviewInput::from_fixture(&case.input, config.approver.context_budget_bytes);
     let (result, events) = audit::capture(async {
@@ -723,8 +728,10 @@ pub async fn run(options: Options) -> Result<()> {
                 repetition,
                 config.clone(),
                 report.questions.clone().unwrap_or(Value::Null),
-                options.retries,
-                options.deadline,
+                TrialOptions {
+                    retries: options.retries,
+                    deadline: options.deadline,
+                },
                 trial_dir,
                 cancel_tx.subscribe(),
             ));
