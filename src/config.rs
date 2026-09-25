@@ -757,10 +757,7 @@ pub fn edit() -> anyhow::Result<()> {
             .create_new(true)
             .mode(0o600)
             .open(&path)?;
-        writeln!(
-            file,
-            "# Optional common settings; omit to use each agent's defaults.\n# [approver]\n# provider = \"pi\"\n# model = \"provider/model-id\"\n# effort = \"low\"\n\n# Optional per-agent override:\n# [agents.pi.approver]\n# provider = \"pi\"\n# effort = \"low\"\n\n# approver.instructions customizes Jev questions.\n# A top-level prompt replaces the conversational reviewer prompt; it must follow the structured Judgment contract.\n# Environment variables override file settings."
-        )?;
+        file.write_all(include_bytes!("config.example.toml"))?;
     }
     let editor = ["VISUAL", "EDITOR"]
         .into_iter()

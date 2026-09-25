@@ -99,7 +99,7 @@ with the actual key; the old field is no longer accepted. An optional
 advertising OpenAI compatibility may not support it. `base_url` defaults to
 `https://api.openai.com/v1`. Set `api_key` directly in the approver table.
 Configuration output and previews redact the key; logs do not include it.
-HTTPS is required except for local test servers. Redirects are disabled.
+HTTP and HTTPS endpoints are supported. Redirects are disabled.
 
 Requests contain no tools. Conversations use `previous_response_id` and
 `store=true`; the provider retains response state according to its policies.
@@ -200,7 +200,11 @@ Changes are previewed and saved only after confirmation. Unrelated TOML fields/c
 are preserved. Switching a backend in the form replaces that agent's approver settings.
 
 `config` displays all three agents and setting sources; `config --agent pi` selects one.
-`config --edit` opens the shared TOML file. A root invocation with options requires a
+`config --edit` opens the shared TOML file. If it does not exist, it is created
+with a fully commented [configuration example](../src/config.example.toml)
+covering all TOML fields, including OpenAI Responses API and Jev settings.
+Existing files are preserved; uncomment only the settings you need.
+A root invocation with options requires a
 subcommand and never enters the TUI.
 
 Legacy `.gemini` configuration is not read. Logs, statistics and reviewer sessions
