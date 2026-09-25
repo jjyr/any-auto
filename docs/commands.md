@@ -192,7 +192,9 @@ The default terminal summary shows result counts, total and per-scenario tokens
 Full reports include probabilities, false approvals/rejections, service errors,
 decision instability and baseline improvements/regressions. Missing token usage
 is marked partial; available usage from retry responses is included. Calls are bounded by
-`--max-calls`; retries default to zero. Suites live separately under `evals/`.
+`--max-calls`; retries default to zero. `--deadline` sets the deadline in seconds
+for each trial (default 45, minimum 1), regardless of provider. Backend requests
+also obey `approver.request_timeout` (default 20 seconds). Suites live separately under `evals/`.
 See [evaluation fixtures and report semantics](../evals/README.md).
 
 ## Stats: usage and latency aggregates

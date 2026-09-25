@@ -4,7 +4,9 @@ use anyhow::Context;
 use serde_json::Value;
 use tokio::process::Command;
 
-pub struct AgentApiBackend;
+pub struct AgentApiBackend {
+    pub request_timeout: u64,
+}
 
 impl SessionTransport for AgentApiBackend {
     fn create_session<'a>(&'a self, config: &'a ReviewerConfig, id: &'a str) -> BackendFuture<'a> {
@@ -19,7 +21,14 @@ impl SessionTransport for AgentApiBackend {
                 args.push(model);
             }
             args.push(&config.prompt);
-            let raw = process::call("agentapi", Command::new("agentapi"), &args, id).await?;
+            let raw = process::call(
+                "agentapi",
+                Command::new("agentapi"),
+                &args,
+                id,
+                self.request_timeout,
+            )
+            .await?;
             let v: Value = serde_json::from_str(&raw).context("Invalid session response JSON")?;
             conversation_id(&v)
         })
@@ -36,6 +45,7 @@ impl SessionTransport for AgentApiBackend {
                 Command::new("agentapi"),
                 &["send-message", cid, payload],
                 id,
+                self.request_timeout,
             )
             .await?;
             if let Ok(v) = serde_json::from_str::<Value>(&raw)

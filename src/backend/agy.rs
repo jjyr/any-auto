@@ -52,6 +52,7 @@ impl AgyBackend {
         model: Option<&str>,
         id: &str,
     ) -> Result<Value> {
+        let timeout = format!("{}s", self.config.approver.request_timeout);
         let mut args = vec![
             "-p",
             prompt,
@@ -59,7 +60,7 @@ impl AgyBackend {
             "--output-format",
             "json",
             "--print-timeout",
-            "20s",
+            &timeout,
             "--mode",
             "plan",
         ];
@@ -85,9 +86,14 @@ impl AgyBackend {
             .parent()
             .unwrap()
             .join("reviewer_session.json");
-        let raw = process::call_with_usage("agy", command, &args, id, |raw| {
-            crate::usage::record(&state_path, cid, raw)
-        })
+        let raw = process::call_with_usage(
+            "agy",
+            command,
+            &args,
+            id,
+            self.config.approver.request_timeout,
+            |raw| crate::usage::record(&state_path, cid, raw),
+        )
         .await?;
         let v: Value = serde_json::from_str(&raw).context("Invalid agy response JSON")?;
         anyhow::ensure!(v["status"] == "SUCCESS", "agy failed: {}", v);

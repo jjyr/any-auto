@@ -22,6 +22,7 @@ selected by another agent. Failures never silently switch providers.
 provider = "pi"
 model = "anthropic/claude-sonnet-4-5"
 effort = "low"
+request_timeout = 20 # Backend request timeout in seconds; must be positive.
 
 # Optional per-agent override. Also available: agents.agy-cli, agents.agy-desktop.
 [agents.pi.approver]
@@ -45,8 +46,8 @@ Do not put secrets in prompts or model names.
 
 Resolution: built-in defaults, common `[approver]`, matching agent override,
 then environment overrides (an empty `ANY_AUTO_API_KEY` explicitly clears the key). Switching provider in an override resets
-inherited model, effort, base URL, API key, prompt, and Jev instructions. Context budget
-and probability threshold remain inherited. Within Jev, overrides merge individual instruction keys. Only the selected agent's effective settings are validated.
+inherited model, effort, base URL, API key, prompt, and Jev instructions. Context budget,
+request timeout, and probability threshold remain inherited. Within Jev, overrides merge individual instruction keys. Only the selected agent's effective settings are validated.
 
 Top-level `model` / `cli_model` and `ANY_AUTO_MODEL` / `ANY_AUTO_CLI_MODEL` are rejected.
 Use `[approver].model` or `ANY_AUTO_APPROVER_MODEL`. Top-level `prompt` remains supported.
@@ -65,7 +66,8 @@ New `approver.model` takes precedence over the corresponding legacy model.
 Pi non-reasoning models only support off. xhigh/max require model capability
 mappings. No effort is sent when omitted. `off` is Pi syntax, `none` is OpenAI
 syntax; they are not universally supported. There is no silent fallback to a
-lower effort. The 20-second backend and 28-second hook deadlines still apply.
+lower effort. Backend requests use `approver.request_timeout` (default 20 seconds), including
+Jev retries and agy print timeout. The 28-second hook deadline still applies.
 See [official research and sources](pi-research.md).
 
 ## Pi runtime and credentials

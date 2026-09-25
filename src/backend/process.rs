@@ -9,8 +9,9 @@ pub(super) async fn call(
     command: Command,
     args: &[&str],
     id: &str,
+    request_timeout: u64,
 ) -> Result<String> {
-    call_with_usage(program, command, args, id, |_| None).await
+    call_with_usage(program, command, args, id, request_timeout, |_| None).await
 }
 
 pub(super) async fn call_with_usage(
@@ -18,6 +19,7 @@ pub(super) async fn call_with_usage(
     mut command: Command,
     args: &[&str],
     id: &str,
+    request_timeout: u64,
     usage: impl FnOnce(&str) -> Option<crate::usage::Tokens>,
 ) -> Result<String> {
     crate::context::apply(&mut command);
@@ -56,7 +58,7 @@ pub(super) async fn call_with_usage(
                 "search_path":std::env::split_paths(&path).collect::<Vec<_>>(),
                 "fallback_directory":config::home().join(".gemini/antigravity-cli/bin")}),
     );
-    let result = tokio::time::timeout(Duration::from_secs(20), async {
+    let result = tokio::time::timeout(Duration::from_secs(request_timeout), async {
         command.env("PATH", &path);
         let child = command
             .args(args)

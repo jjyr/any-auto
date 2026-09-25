@@ -29,6 +29,9 @@ pub struct Options {
     /// Maximum simultaneous trials; each trial has an isolated reviewer session.
     #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u32).range(1..=64))]
     pub concurrency: u32,
+    /// Deadline in seconds for each trial, independent of provider.
+    #[arg(long, default_value_t = 45, value_parser = clap::value_parser!(u64).range(1..))]
+    pub deadline: u64,
     /// Full Jev questions JSON, replacing the effective configured rubric.
     #[arg(long)]
     pub questions: Option<PathBuf>,
@@ -543,6 +546,7 @@ async fn run_trial(
     config: config::ReviewerConfig,
     questions: Value,
     retries: u32,
+    deadline: u64,
     trial_dir: PathBuf,
     mut cancelled: tokio::sync::watch::Receiver<bool>,
 ) -> Trial {
@@ -555,7 +559,6 @@ async fn run_trial(
             crate::backend::for_config(&config, trial_dir.join("workspace"),
                 trial_dir.join("reviewer_session.json"), "evaluation".into(), None, false)?
         };
-        let deadline = if config.approver.provider == config::Provider::Cli {45} else {20};
         tokio::select! {
             biased;
             _ = cancelled.changed() => Err(anyhow::anyhow!("Evaluation interrupted")),
@@ -721,6 +724,7 @@ pub async fn run(options: Options) -> Result<()> {
                 config.clone(),
                 report.questions.clone().unwrap_or(Value::Null),
                 options.retries,
+                options.deadline,
                 trial_dir,
                 cancel_tx.subscribe(),
             ));
@@ -775,6 +779,26 @@ pub async fn run(options: Options) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn deadline_argument_defaults_and_validation() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            options: super::Options,
+        }
+        let base = ["eval", "--suite", "suite.jsonl", "--output", "report.json"];
+        assert_eq!(Cli::try_parse_from(base).unwrap().options.deadline, 45);
+        assert_eq!(
+            Cli::try_parse_from(base.into_iter().chain(["--deadline", "90"]))
+                .unwrap()
+                .options
+                .deadline,
+            90
+        );
+        assert!(Cli::try_parse_from(base.into_iter().chain(["--deadline", "0"])).is_err());
+    }
+
     use super::*;
     #[test]
     fn usage_preserves_partial_components_and_supports_old_reports() {

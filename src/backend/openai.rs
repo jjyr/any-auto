@@ -49,7 +49,7 @@ impl OpenAiBackend {
             }
         }
         let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(20))
+            .timeout(Duration::from_secs(self.config.approver.request_timeout))
             .redirect(reqwest::redirect::Policy::none())
             .build()?;
         let mut response = client.post(url).bearer_auth(key).json(&body).send().await?;

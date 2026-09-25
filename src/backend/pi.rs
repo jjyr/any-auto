@@ -304,18 +304,21 @@ impl SessionTransport for PiBackend {
                 "backend_request",
                 json!({"provider":"pi","operation":"prompt"}),
             );
-            let result = tokio::time::timeout(Duration::from_secs(20), async {
-                let mut rpc = match existing {
-                    Some(rpc) => rpc,
-                    None => self.spawn(id).await?,
-                };
-                std::fs::write(self.workspace.join("in-flight"), b"1")?;
-                let (text, usage) = rpc.review(payload, id).await?;
-                std::fs::remove_file(self.workspace.join("in-flight"))?;
-                let metadata = rpc.metadata.clone();
-                *slot = Some(rpc);
-                Ok::<_, anyhow::Error>((text, usage, metadata))
-            })
+            let result = tokio::time::timeout(
+                Duration::from_secs(self.config.approver.request_timeout),
+                async {
+                    let mut rpc = match existing {
+                        Some(rpc) => rpc,
+                        None => self.spawn(id).await?,
+                    };
+                    std::fs::write(self.workspace.join("in-flight"), b"1")?;
+                    let (text, usage) = rpc.review(payload, id).await?;
+                    std::fs::remove_file(self.workspace.join("in-flight"))?;
+                    let metadata = rpc.metadata.clone();
+                    *slot = Some(rpc);
+                    Ok::<_, anyhow::Error>((text, usage, metadata))
+                },
+            )
             .await
             .context("Pi RPC approval timed out")
             .and_then(|v| v);
