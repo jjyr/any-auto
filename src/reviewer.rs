@@ -80,7 +80,7 @@ impl Bridge {
         let fingerprint = format!(
             "{:x}",
             Sha256::digest(serde_json::to_vec(
-                &serde_json::json!({"api_key_hash":format!("{:x}", Sha256::digest(config.approver.api_key.as_bytes())),"approver":config.approver,"prompt":config.prompt,"policy_version":crate::policy::DECISION_POLICY_VERSION,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
+                &serde_json::json!({"api_key_hash":format!("{:x}", Sha256::digest(config.approver.api_key().as_bytes())),"approver":config.approver,"prompt":config.prompt,"policy_version":crate::policy::DECISION_POLICY_VERSION,"runtime_fingerprint":crate::context::current().map(|c| c.fingerprint())})
             )?)
         );
         if self.fingerprint.as_ref() != Some(&fingerprint) {
@@ -151,11 +151,11 @@ impl Bridge {
         if let Some(settings) = &self.settings {
             let metadata = assessment.reviewer.get_or_insert_with(|| json!({}));
             metadata["provider"] = json!(settings.approver.provider);
-            metadata["requested_model"] = json!(settings.approver.model);
+            metadata["requested_model"] = json!(settings.approver.model());
             if metadata["model"].is_null() {
-                metadata["model"] = json!(settings.approver.model);
+                metadata["model"] = json!(settings.approver.model());
             }
-            metadata["effort_requested"] = json!(settings.approver.effort);
+            metadata["effort_requested"] = json!(settings.approver.effort());
         }
         audit::record(id, "reviewer_result", json!({"assessment":assessment}));
         assessment

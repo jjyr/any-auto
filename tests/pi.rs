@@ -207,10 +207,24 @@ fn cancelled_hook_discards_busy_rpc_and_next_review_uses_new_child() {
 
 #[test]
 fn openai_responses_reuses_response_id_and_normalizes_usage() {
+    check_openai_responses(true);
+}
+
+#[test]
+fn openai_responses_omits_unconfigured_generation_parameters() {
+    check_openai_responses(false);
+}
+
+fn check_openai_responses(generation_settings: bool) {
     use std::{io::Read, net::TcpListener};
     let h = Agent::new();
     let server = TcpListener::bind("127.0.0.1:0").unwrap();
-    h.config(&format!("[agents.pi.approver]\nprovider='openai'\nmodel='fixture-model'\neffort='low'\nbase_url='http://{}/v1'\napi_key='fixture-secret'\n", server.local_addr().unwrap()));
+    let generation = if generation_settings {
+        "temperature=0.6\ntop_p=0.95\nmax_output_tokens=2048\n[agents.pi.approver.openai.llama_cpp]\ntop_k=20\nmin_p=0.0\npresence_penalty=0.0\nrepeat_penalty=1.0\nreasoning_budget_tokens=128\n"
+    } else {
+        ""
+    };
+    h.config(&format!("[agents.pi.approver]\nprovider='openai'\n[agents.pi.approver.openai]\nmodel='fixture-model'\nbase_url='http://{}/v1'\napi_key='fixture-secret'\n[agents.pi.approver.openai.common]\neffort='low'\n{generation}", server.local_addr().unwrap()));
     let worker = std::thread::spawn(move || {
         let mut requests = Vec::new();
         for i in 1..=2 {
@@ -266,6 +280,30 @@ fn openai_responses_reuses_response_id_and_normalizes_usage() {
     assert_eq!(requests[1]["previous_response_id"], "resp_1");
     assert_eq!(requests[0]["reasoning"]["effort"], "low");
     assert_eq!(requests[0]["tools"], json!([]));
+    for request in &requests {
+        assert!(request.get("openai").is_none());
+        assert!(request.get("common").is_none());
+        assert!(request.get("llama_cpp").is_none());
+    }
+    for request in &requests {
+        for (key, expected) in [
+            ("temperature", json!(0.6)),
+            ("top_p", json!(0.95)),
+            ("top_k", json!(20)),
+            ("min_p", json!(0.0)),
+            ("presence_penalty", json!(0.0)),
+            ("repeat_penalty", json!(1.0)),
+            ("max_output_tokens", json!(2048)),
+            ("reasoning_budget_tokens", json!(128)),
+        ] {
+            if generation_settings {
+                assert_eq!(request[key], expected, "{key}");
+            } else {
+                assert!(request.get(key).is_none(), "unexpected {key}");
+            }
+        }
+    }
+
     let input: Value = serde_json::from_str(requests[0]["input"].as_str().unwrap()).unwrap();
     assert_eq!(
         input["authorization"]["latest_user_message"]["text"],

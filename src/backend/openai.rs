@@ -20,12 +20,15 @@ impl OpenAiBackend {
         self.workspace.join("response.json")
     }
     async fn review(&self, payload: &str, id: &str) -> Result<String> {
-        let key = &self.config.approver.api_key;
+        let config = self
+            .config
+            .approver
+            .openai
+            .as_ref()
+            .context("Missing OpenAI configuration")?;
+        let key = &config.api_key;
         ensure!(!key.trim().is_empty(), "OpenAI approver API key is empty");
-        let endpoint = format!(
-            "{}/responses",
-            self.config.approver.base_url.trim_end_matches('/')
-        );
+        let endpoint = format!("{}/responses", config.base_url.trim_end_matches('/'));
         let url = reqwest::Url::parse(&endpoint)?;
         ensure!(
             url.username().is_empty()
@@ -38,10 +41,8 @@ impl OpenAiBackend {
             matches!(url.scheme(), "http" | "https"),
             "API URL must use HTTP or HTTPS"
         );
-        let mut body = json!({"model":self.config.approver.model,"instructions":self.config.prompt,"input":payload,"tools":[],"store":true});
-        if let Some(effort) = &self.config.approver.effort {
-            body["reasoning"] = json!({"effort":effort});
-        }
+        let mut body = json!({"model":config.model,"instructions":self.config.prompt,"input":payload,"tools":[],"store":true});
+        config.apply_generation(&mut body);
         if let Ok(bytes) = std::fs::read(self.state()) {
             let previous: Value = serde_json::from_slice(&bytes)?;
             if let Some(id) = previous["id"].as_str() {

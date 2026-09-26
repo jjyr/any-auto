@@ -660,7 +660,7 @@ pub async fn run(options: Options) -> Result<()> {
         .transpose()?;
     if provider == config::Provider::Jev {
         ensure!(
-            !config.approver.api_key.trim().is_empty(),
+            !config.approver.api_key().trim().is_empty(),
             "Jev API key is empty"
         );
         jev::JevBackend::for_evaluation(
@@ -693,7 +693,7 @@ pub async fn run(options: Options) -> Result<()> {
         provider: provider.as_str().into(),
         decision_policy_version: crate::policy::DECISION_POLICY_VERSION.into(),
         base_rubric_version: crate::policy::RUBRIC_VERSION.into(),
-        requested_model: config.approver.model.clone(),
+        requested_model: config.approver.model().map(str::to_owned),
         probability_threshold: config.approver.probability_threshold,
         repeat: options.repeat,
         concurrency: options.concurrency,

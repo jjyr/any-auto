@@ -72,11 +72,17 @@ pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
         } else {
             "default"
         };
-        let mut settings = toml_edit::Table::new();
-        settings["provider"] = toml_edit::value(provider);
+        let mut backend_settings = toml_edit::Table::new();
         // Explicit empty overrides prevent inheriting common model/effort.
-        settings["model"] = toml_edit::value(model);
-        settings["effort"] = toml_edit::value(if effort == "default" { "" } else { effort });
+        backend_settings["model"] = toml_edit::value(model);
+        let effort = toml_edit::value(if effort == "default" { "" } else { effort });
+        if provider == "openai" {
+            let mut common = toml_edit::Table::new();
+            common["effort"] = effort;
+            backend_settings["common"] = toml_edit::Item::Table(common);
+        } else {
+            backend_settings["effort"] = effort;
+        }
         if matches!(provider, "openai" | "jev") {
             let url: String = Input::new()
                 .with_prompt("API base URL (including /v1)")
@@ -90,9 +96,20 @@ pub fn stage_settings(agents: &[config::Mode]) -> Result<Option<String>> {
                 )
                 .interact_text()?;
             let key = Password::new().with_prompt("API key").interact()?;
-            settings["base_url"] = toml_edit::value(url);
-            settings["api_key"] = toml_edit::value(key);
+            backend_settings["base_url"] = toml_edit::value(url);
+            backend_settings["api_key"] = toml_edit::value(key);
         }
+        let mut settings = if provider == "openai" {
+            let mut settings = toml_edit::Table::new();
+            settings["openai"] = toml_edit::Item::Table(backend_settings);
+            println!(
+                "Optional sampling and thinking budgets: edit openai.common / openai.llama_cpp with any-auto config --edit."
+            );
+            settings
+        } else {
+            backend_settings
+        };
+        settings["provider"] = toml_edit::value(provider);
         if provider == "jev" {
             let threshold: f64 = Input::new()
                 .with_prompt("Probability threshold (0 to 1)")

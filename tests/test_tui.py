@@ -158,3 +158,39 @@ exercise([], [
     (b"any-auto", b"\x1b"),
 ], uninstalled, setup=existing_jev)
 print("TUI uninstall cancel/empty/decline/menu: 4 checks passed")
+
+
+def openai_configured(home):
+    import json
+    import subprocess
+    text = (home / ".config/any-auto/config.toml").read_text()
+    assert "[agents.agy-cli.approver.openai]" in text, text
+    assert "[agents.agy-cli.approver.openai.common]" in text, text
+    assert 'api_key = "tui-fixture-secret"' in text, text
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("XDG_", "ANY_AUTO_", "PI_"))}
+    env["HOME"] = str(home)
+    result = subprocess.run([BINARY, "config", "--agent", "agy-cli", "--json"],
+                            env=env, capture_output=True, text=True, check=True)
+    approver = json.loads(result.stdout)["reviewer"]["approver"]
+    assert approver["provider"] == "openai", approver
+    assert approver["model"] is None and approver["effort"] is None, approver
+    assert approver["openai"]["model"] == "fixture-model", approver
+    assert approver["openai"]["base_url"] == "https://api.openai.com/v1", approver
+    assert approver["openai"]["api_key"] == "[REDACTED]", approver
+    assert approver["openai"]["common"]["effort"] == "low", approver
+
+
+exercise([], [
+    (b"any-auto", b"\x1b[B\x1b[B\r"),
+    (b"Customize approver settings?", b"y"),
+    (b"Approver backend", b"\x1b[B" * 3 + b"\r"),
+    (b"Model (blank", b"fixture-model\r"),
+    (b"Effort", b"\x1b[B" * 3 + b"\r"),
+    (b"API base URL", b"\r"),
+    (b"API key", b"tui-fixture-secret\r"),
+    (b"Approver backend", b"\r"),
+    (b"Approver backend", b"\r"),
+    (b"Save configuration?", b"y"),
+    (b"any-auto", b"\x1b"),
+], openai_configured)
+print("TUI nested OpenAI configuration passed")

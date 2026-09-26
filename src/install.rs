@@ -120,7 +120,7 @@ fn installation_summary(agents: &[Agent]) -> Result<()> {
             "  ✓ approver: {} ({source})",
             settings.approver.provider.as_str()
         );
-        if let Some(model) = settings.approver.model {
+        if let Some(model) = settings.approver.model() {
             println!("    model: {model}");
         }
         if settings.approver.provider == config::Provider::Jev {
@@ -321,7 +321,7 @@ pub fn doctor() -> Result<()> {
                         std::env::var_os("ANTIGRAVITY_LS_ADDRESS").is_some()
                     }
                     config::Provider::Openai | config::Provider::Jev => {
-                        !c.approver.api_key.trim().is_empty()
+                        !c.approver.api_key().trim().is_empty()
                     }
                 };
                 if available {

@@ -1,3 +1,6 @@
+mod openai;
+use openai::{OpenAiConfig, OpenAiSettings};
+
 use std::{env, fs, path::PathBuf};
 
 #[derive(
@@ -192,6 +195,7 @@ impl Provider {
 #[serde(deny_unknown_fields)]
 struct ApproverSettings {
     provider: Option<Provider>,
+    openai: Option<OpenAiSettings>,
     model: Option<String>,
     effort: Option<String>,
     base_url: Option<String>,
@@ -242,6 +246,7 @@ impl JevInstructions {
 #[derive(Clone, serde::Serialize)]
 pub struct ApproverConfig {
     pub provider: Provider,
+    pub openai: Option<OpenAiConfig>,
     pub model: Option<String>,
     pub effort: Option<String>,
     pub base_url: String,
@@ -253,6 +258,48 @@ pub struct ApproverConfig {
     pub diagnostic_snapshot: bool,
     pub instructions: JevInstructions,
 }
+impl ApproverConfig {
+    pub fn model(&self) -> Option<&str> {
+        self.openai
+            .as_ref()
+            .map(|v| v.model.as_str())
+            .or(self.model.as_deref())
+    }
+    pub fn effort(&self) -> Option<&str> {
+        if let Some(openai) = &self.openai {
+            openai.common.effort.as_deref()
+        } else {
+            self.effort.as_deref()
+        }
+    }
+    pub fn api_key(&self) -> &str {
+        self.openai.as_ref().map_or(&self.api_key, |v| &v.api_key)
+    }
+}
+
+/// Track leaf values, so a partial nested override does not relabel inherited fields.
+fn record_sources(
+    sources: &mut std::collections::BTreeMap<String, String>,
+    value: &serde_json::Value,
+    prefix: &str,
+    table: &str,
+) {
+    if let Some(fields) = value.as_object() {
+        for (key, value) in fields {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if value.is_object() {
+                record_sources(sources, value, &path, &format!("{table}.{key}"));
+            } else if !value.is_null() {
+                sources.insert(path, format!("[{table}]"));
+            }
+        }
+    }
+}
+
 #[derive(Clone, serde::Serialize)]
 pub struct ReviewerConfig {
     pub approver: ApproverConfig,
@@ -358,25 +405,27 @@ fn resolve_config(
         "instructions.risk",
         "instructions.authorization",
         "instructions.policy",
+        "openai.model",
+        "openai.base_url",
+        "openai.api_key",
+        "openai.common.effort",
+        "openai.common.temperature",
+        "openai.common.top_p",
+        "openai.common.max_output_tokens",
+        "openai.llama_cpp.top_k",
+        "openai.llama_cpp.min_p",
+        "openai.llama_cpp.presence_penalty",
+        "openai.llama_cpp.repeat_penalty",
+        "openai.llama_cpp.reasoning_budget_tokens",
     ] {
         sources.insert(key.to_owned(), "default".to_owned());
     }
-    let common = serde_json::to_value(&file.approver)?;
-    for (key, value) in common.as_object().unwrap() {
-        if !value.is_null() {
-            sources.insert(key.clone(), "[approver]".into());
-            if key == "instructions" {
-                for (name, text) in value.as_object().unwrap() {
-                    if !text.is_null() {
-                        sources.insert(
-                            format!("instructions.{name}"),
-                            "[approver.instructions]".into(),
-                        );
-                    }
-                }
-            }
-        }
-    }
+    record_sources(
+        &mut sources,
+        &serde_json::to_value(&file.approver)?,
+        "",
+        "approver",
+    );
     let agent_values = serde_json::to_value(&agent)?;
     let mut settings = file.approver;
     if agent.provider.is_some() && agent.provider != settings.provider.or(Some(defaults)) {
@@ -396,20 +445,17 @@ fn resolve_config(
             })
             .for_each(|(_, s)| *s = "default".into());
     }
-    for (key, value) in agent_values.as_object().unwrap() {
-        if !value.is_null() {
-            sources.insert(key.clone(), format!("[agents.{}.approver]", mode.agent()));
-            if key == "instructions" {
-                for (name, text) in value.as_object().unwrap() {
-                    if !text.is_null() {
-                        sources.insert(
-                            format!("instructions.{name}"),
-                            format!("[agents.{}.approver.instructions]", mode.agent()),
-                        );
-                    }
-                }
-            }
-        }
+    record_sources(
+        &mut sources,
+        &agent_values,
+        "",
+        &format!("agents.{}.approver", mode.agent()),
+    );
+    if let Some(openai) = agent.openai {
+        settings
+            .openai
+            .get_or_insert_with(Default::default)
+            .merge(openai);
     }
     if agent.provider.is_some() {
         settings.provider = agent.provider;
@@ -450,6 +496,7 @@ fn resolve_config(
     {
         let provider: Provider = serde_json::from_value(serde_json::json!(value))?;
         if provider != settings.provider.unwrap_or(defaults) {
+            settings.openai = None;
             settings.model = None;
             settings.effort = None;
             settings.base_url = None;
@@ -470,6 +517,20 @@ fn resolve_config(
         sources.insert("provider".into(), "ANY_AUTO_PROVIDER".into());
     }
     let provider = settings.provider.unwrap_or(defaults);
+    anyhow::ensure!(
+        provider == Provider::Openai || settings.openai.is_none(),
+        "openai settings require provider='openai'"
+    );
+    if provider == Provider::Openai {
+        anyhow::ensure!(
+            settings.model.is_none()
+                && settings.effort.is_none()
+                && settings.base_url.is_none()
+                && settings.api_key.is_none(),
+            "OpenAI settings moved: use [approver.openai] (or [agents.NAME.approver.openai]) for model/base_url/api_key and its [common] table for effort"
+        );
+    }
+
     let (prompt, prompt_source) = resolve(
         "prompt",
         prompt_setting,
@@ -484,12 +545,22 @@ fn resolve_config(
             && environment
             && (field == "api_key" || !value.is_empty())
         {
-            if field == "base_url" {
-                settings.base_url = Some(value);
+            if provider == Provider::Openai {
+                let openai = settings.openai.get_or_insert_with(Default::default);
+                if field == "base_url" {
+                    openai.base_url = Some(value);
+                } else {
+                    openai.api_key = Some(value);
+                }
+                sources.insert(format!("openai.{field}"), variable.into());
             } else {
-                settings.api_key = Some(value);
+                if field == "base_url" {
+                    settings.base_url = Some(value);
+                } else {
+                    settings.api_key = Some(value);
+                }
+                sources.insert(field.into(), variable.into());
             }
-            sources.insert(field.into(), variable.into());
         }
     }
     anyhow::ensure!(
@@ -541,13 +612,28 @@ fn resolve_config(
         ("model", "ANY_AUTO_APPROVER_MODEL"),
         ("effort", "ANY_AUTO_EFFORT"),
     ] {
-        if environment && crate::context::var(var).is_ok_and(|v| !v.is_empty()) {
-            sources.insert(key.into(), var.into());
+        if let Ok(value) = crate::context::var(var)
+            && environment
+            && !value.is_empty()
+        {
+            if provider == Provider::Openai {
+                let openai = settings.openai.get_or_insert_with(Default::default);
+                let path = if key == "model" {
+                    openai.model = Some(value);
+                    "openai.model"
+                } else {
+                    openai.common.effort = Some(value);
+                    "openai.common.effort"
+                };
+                sources.insert(path.into(), var.into());
+            } else {
+                sources.insert(key.into(), var.into());
+            }
         }
     }
     let selected_model = crate::context::var("ANY_AUTO_APPROVER_MODEL")
         .ok()
-        .filter(|v| environment && !v.is_empty())
+        .filter(|v| environment && provider != Provider::Openai && !v.is_empty())
         .or(settings.model)
         .unwrap_or_default();
     let selected_model = if provider == Provider::Jev && selected_model.trim().is_empty() {
@@ -557,7 +643,7 @@ fn resolve_config(
     };
     let effort = crate::context::var("ANY_AUTO_EFFORT")
         .ok()
-        .filter(|v| environment && !v.is_empty())
+        .filter(|v| environment && provider != Provider::Openai && !v.is_empty())
         .or(settings.effort)
         .filter(|v| !v.trim().is_empty());
     if let Some(effort) = &effort {
@@ -567,11 +653,7 @@ fn resolve_config(
                 effort.as_str(),
                 "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
             ),
-            Provider::Openai => matches!(
-                effort.as_str(),
-                "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max"
-            ),
-            Provider::Agentapi | Provider::Jev => false,
+            Provider::Openai | Provider::Agentapi | Provider::Jev => false,
         };
         anyhow::ensure!(
             supported,
@@ -585,10 +667,7 @@ fn resolve_config(
             "Invalid agentapi model tier"
         );
     }
-    anyhow::ensure!(
-        provider != Provider::Openai || !selected_model.trim().is_empty(),
-        "OpenAI approver requires model"
-    );
+
     let context_budget_bytes = settings
         .context_budget_bytes
         .unwrap_or(crate::review_input::DEFAULT_CONTEXT_BUDGET_BYTES);
@@ -598,7 +677,13 @@ fn resolve_config(
     );
     let request_timeout = settings.request_timeout.unwrap_or(20);
     anyhow::ensure!(request_timeout > 0, "request_timeout must be positive");
+    let openai = if provider == Provider::Openai {
+        Some(settings.openai.unwrap_or_default().resolve()?)
+    } else {
+        None
+    };
     let approver = ApproverConfig {
+        openai,
         request_timeout,
         context_budget_bytes,
         provider,
@@ -652,29 +737,53 @@ fn print_approver(
         "request_timeout",
         &format!("{}s", approver.request_timeout),
     );
-    row(
-        "Model",
-        "model",
-        approver.model.as_deref().unwrap_or("default"),
-    );
-    if approver.provider != Provider::Jev {
+    if let Some(openai) = &approver.openai {
+        let value = serde_json::to_value(openai).expect("serializable OpenAI config");
+        fn leaves(value: &serde_json::Value, prefix: &str, out: &mut Vec<(String, String)>) {
+            if let Some(fields) = value.as_object() {
+                for (key, value) in fields {
+                    leaves(value, &format!("{prefix}.{key}"), out);
+                }
+            } else if !value.is_null() {
+                out.push((
+                    prefix.into(),
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| value.to_string()),
+                ));
+            }
+        }
+        let mut fields = Vec::new();
+        leaves(&value, "openai", &mut fields);
+        for (key, value) in fields {
+            row(&key, &key, &value);
+        }
+    } else {
         row(
-            "Effort",
-            "effort",
-            approver.effort.as_deref().unwrap_or("default"),
+            "Model",
+            "model",
+            approver.model.as_deref().unwrap_or("default"),
         );
-    }
-    if matches!(approver.provider, Provider::Openai | Provider::Jev) {
-        row("Base URL", "base_url", &approver.base_url);
-        row(
-            "API key",
-            "api_key",
-            if approver.api_key.trim().is_empty() {
-                "not configured"
-            } else {
-                "[REDACTED]"
-            },
-        );
+        if approver.provider != Provider::Jev {
+            row(
+                "Effort",
+                "effort",
+                approver.effort.as_deref().unwrap_or("default"),
+            );
+        }
+        if approver.provider == Provider::Jev {
+            row("Base URL", "base_url", &approver.base_url);
+            row(
+                "API key",
+                "api_key",
+                if approver.api_key.is_empty() {
+                    "not configured"
+                } else {
+                    "[REDACTED]"
+                },
+            );
+        }
     }
     row(
         "Context budget bytes",
@@ -825,6 +934,135 @@ pub fn overview(json: bool, selected: Option<Mode>) -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod jev_tests {
+    #[test]
+    fn openai_generation_settings_inherit_override_and_reset() {
+        let common = "[approver]\nprovider='openai'\nrequest_timeout=30\n[approver.openai]\nmodel='fixture'\napi_key='fixture-secret'\n[approver.openai.common]\neffort='low'\ntemperature=0.6\ntop_p=0.95\nmax_output_tokens=2048\n[approver.openai.llama_cpp]\ntop_k=20\nmin_p=0.0\npresence_penalty=0.0\nrepeat_penalty=1.0\nreasoning_budget_tokens=128\n";
+        let config = resolve(&format!("{common}[agents.pi.approver.openai.common]\ntemperature=0.0\neffort=''\n[agents.pi.approver.openai.llama_cpp]\nreasoning_budget_tokens=0\n"), Mode::Pi).unwrap();
+        let openai = config.approver.openai.as_ref().unwrap();
+        assert_eq!(openai.common.temperature, Some(0.0));
+        assert_eq!(openai.common.effort, None);
+        assert_eq!(openai.llama_cpp.reasoning_budget_tokens, Some(0));
+        assert_eq!(openai.llama_cpp.top_k, Some(20));
+        assert_eq!(openai.common.max_output_tokens, Some(2048));
+        assert_eq!(config.approver.model(), Some("fixture"));
+        assert_eq!(config.approver.api_key(), "fixture-secret");
+        assert_eq!(
+            config.approver_sources["openai.common.temperature"],
+            "[agents.pi.approver.openai.common]"
+        );
+        assert_eq!(
+            config.approver_sources["openai.llama_cpp.top_k"],
+            "[approver.openai.llama_cpp]"
+        );
+        assert_eq!(config.approver_sources["openai.model"], "[approver.openai]");
+        let raw = serde_json::to_string(&config).unwrap();
+        assert!(!raw.contains("fixture-secret"));
+        let value: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(value["approver"]["openai"]["api_key"], "[REDACTED]");
+        let reset = resolve(
+            &format!("{common}[agents.pi.approver]\nprovider='pi'\n"),
+            Mode::Pi,
+        )
+        .unwrap();
+        assert!(reset.approver.openai.is_none());
+        assert_eq!(reset.approver.request_timeout, 30);
+        assert_eq!(
+            reset.approver_sources["openai.common.temperature"],
+            "default"
+        );
+        let defaults = resolve(
+            "[approver]\nprovider='openai'\n[approver.openai]\nmodel='fixture'",
+            Mode::Pi,
+        )
+        .unwrap();
+        let openai = defaults.approver.openai.unwrap();
+        assert!(openai.common.temperature.is_none());
+        assert!(openai.llama_cpp.reasoning_budget_tokens.is_none());
+    }
+
+    #[test]
+    fn openai_generation_settings_validate_before_requests() {
+        let prefix = "[approver]\nprovider='openai'\n[approver.openai]\nmodel='fixture'\n";
+        for (group, setting) in [
+            ("common", "temperature=-0.1"),
+            ("common", "temperature=nan"),
+            ("common", "temperature=inf"),
+            ("common", "top_p=1.1"),
+            ("common", "max_output_tokens=0"),
+            ("common", "max_output_tokens=2147483648"),
+            ("common", "effort='off'"),
+            ("llama_cpp", "min_p=-0.1"),
+            ("llama_cpp", "presence_penalty=2.1"),
+            ("llama_cpp", "repeat_penalty=-1.0"),
+            ("llama_cpp", "top_k=-1"),
+            ("llama_cpp", "top_k=2147483648"),
+            ("llama_cpp", "reasoning_budget_tokens=-2"),
+        ] {
+            let error = resolve(
+                &format!("{prefix}[approver.openai.{group}]\n{setting}"),
+                Mode::Pi,
+            )
+            .err()
+            .unwrap()
+            .to_string();
+            assert!(!error.is_empty());
+        }
+        for (group, setting) in [
+            ("common", "temperature=0.6"),
+            ("common", "top_p=0.95"),
+            ("common", "max_output_tokens=2048"),
+            ("common", "effort='none'"),
+            ("llama_cpp", "top_k=20"),
+            ("llama_cpp", "min_p=0.0"),
+            ("llama_cpp", "presence_penalty=0.0"),
+            ("llama_cpp", "repeat_penalty=1.0"),
+            ("llama_cpp", "reasoning_budget_tokens=-1"),
+        ] {
+            let text = format!("{prefix}[approver.openai.{group}]\n{setting}");
+            assert!(resolve(&text, Mode::Pi).is_ok(), "{setting}");
+            assert!(
+                resolve(
+                    &text.replace("provider='openai'", "provider='pi'"),
+                    Mode::Pi
+                )
+                .is_err(),
+                "{setting}"
+            );
+        }
+        for table in [
+            "approver.openai",
+            "approver.openai.common",
+            "approver.openai.llama_cpp",
+        ] {
+            assert!(
+                resolve(
+                    &format!("[approver]\nprovider='openai'\n[{table}]\nunknown=1"),
+                    Mode::Pi
+                )
+                .is_err()
+            );
+        }
+        assert!(
+            resolve(
+                &format!("{prefix}[approver.openai.common]\ntop_k=20"),
+                Mode::Pi
+            )
+            .is_err()
+        );
+        assert!(
+            resolve(
+                &format!("{prefix}[approver.openai.llama_cpp]\ntemperature=0.5"),
+                Mode::Pi
+            )
+            .is_err()
+        );
+        let error = resolve("[approver]\nprovider='openai'\nmodel='old'", Mode::Pi)
+            .err()
+            .unwrap()
+            .to_string();
+        assert!(error.contains("OpenAI settings moved"));
+    }
+
     #[test]
     fn request_timeout_defaults_overrides_and_validation() {
         assert_eq!(resolve("", Mode::Cli).unwrap().approver.request_timeout, 20);
@@ -978,7 +1216,7 @@ mod jev_tests {
     }
     #[test]
     fn direct_keys_inherit_override_and_reset_with_provider() {
-        let text = "[approver]\nprovider='jev'\napi_key='common-secret'\n[agents.pi.approver]\napi_key='pi-secret'\n[agents.agy-desktop.approver]\nprovider='openai'\nmodel='fixture'\n";
+        let text = "[approver]\nprovider='jev'\napi_key='common-secret'\n[agents.pi.approver]\napi_key='pi-secret'\n[agents.agy-desktop.approver]\nprovider='openai'\n[agents.agy-desktop.approver.openai]\nmodel='fixture'\n";
         assert_eq!(
             resolve(text, Mode::Cli).unwrap().approver.api_key,
             "common-secret"

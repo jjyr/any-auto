@@ -27,18 +27,23 @@ request_timeout = 20 # Backend request timeout in seconds; must be positive.
 # Optional per-agent override. Also available: agents.agy-cli, agents.agy-desktop.
 [agents.pi.approver]
 provider = "openai"
+
+[agents.pi.approver.openai]
 model = "gpt-5.5"
-effort = "low"
 # base_url = "https://api.openai.com/v1"
 # api_key = "your-api-key"
+
+[agents.pi.approver.openai.common]
+effort = "low"
 ```
 
 The example models illustrate syntax; they are not application defaults. Models
 must be available in the chosen backend/account. Pi supports provider/model IDs;
 its provider prefix is distinct from this application's `provider = "pi"`.
 
-All approver fields are optional except `model` when using OpenAI. Omitted model
-or effort uses the backend default. A blank model also selects the default.
+OpenAI requires `openai.model` (or `ANY_AUTO_APPROVER_MODEL`). Other providers
+use their default model when `model` is omitted or blank. Omitted effort uses
+the backend default; a blank effort explicitly clears an inherited effort.
 For conversational backends, the optional top-level `prompt` (or `ANY_AUTO_PROMPT`)
 replaces the entire default from `src/prompts/prompt.txt`. Custom prompts must
 request the typed JSON classification contract. `approver.instructions` is Jev-only.
@@ -46,12 +51,16 @@ Do not put secrets in prompts or model names.
 
 Resolution: built-in defaults, common `[approver]`, matching agent override,
 then environment overrides (an empty `ANY_AUTO_API_KEY` explicitly clears the key). Switching provider in an override resets
-inherited model, effort, base URL, API key, prompt, and Jev instructions. Context budget,
-request timeout, and probability threshold remain inherited. Within Jev, overrides merge individual instruction keys. Only the selected agent's effective settings are validated.
+inherited model, effort, base URL, API key, prompt, the entire `openai` subtree,
+and Jev instructions. Context budget, request timeout, and probability threshold
+remain inherited. Within one provider, nested OpenAI tables and Jev instructions
+merge by leaf field, not by replacing the whole table. Explicit zero values
+are overrides; empty tables do not clear inherited values. Only the selected
+agent's effective settings are validated.
 
 Top-level `model` / `cli_model` and `ANY_AUTO_MODEL` / `ANY_AUTO_CLI_MODEL` are rejected.
-Use `[approver].model` or `ANY_AUTO_APPROVER_MODEL`. Top-level `prompt` remains supported.
-New `approver.model` takes precedence over the corresponding legacy model.
+Use `[approver.openai].model` for OpenAI, `[approver].model` for other providers,
+or `ANY_AUTO_APPROVER_MODEL`. Top-level `prompt` remains supported.
 
 ## Effort support
 
@@ -61,7 +70,7 @@ New `approver.model` takes precedence over the corresponding legacy model.
 | `cli` | `agy --effort` on each turn | low, medium, high; final model support is determined by agy |
 | `agentapi` | No verified control | Explicit effort is rejected |
 | `jev` | No reasoning-effort control | Explicit effort is rejected; configure probability_threshold and instructions instead |
-| `openai` | Responses `reasoning.effort` | none, minimal, low, medium, high, xhigh, max; supported subset depends on model; API errors fail closed |
+| `openai` | `openai.common.effort` → Responses `reasoning.effort` | none, minimal, low, medium, high, xhigh, max; supported subset depends on model; API errors fail closed |
 
 Pi non-reasoning models only support off. xhigh/max require model capability
 mappings. No effort is sent when omitted. `off` is Pi syntax, `none` is OpenAI
@@ -96,8 +105,9 @@ with the actual key; the old field is no longer accepted. An optional
 `ANY_AUTO_API_KEY` override also contains the key itself.
 
 `openai` uses the Responses API, not Chat Completions. An arbitrary endpoint
-advertising OpenAI compatibility may not support it. `base_url` defaults to
-`https://api.openai.com/v1`. Set `api_key` directly in the approver table.
+advertising OpenAI compatibility may not support it. `openai.base_url` defaults to
+`https://api.openai.com/v1`. Set `api_key` in `[approver.openai]` or
+`[agents.NAME.approver.openai]`. Jev continues to use the parent approver table.
 Configuration output and previews redact the key; logs do not include it.
 HTTP and HTTPS endpoints are supported. Redirects are disabled.
 
@@ -106,6 +116,90 @@ Requests contain no tools. Conversations use `previous_response_id` and
 The policy is supplied on every request. Failed cached conversations are retried
 once with fresh state within the overall deadline. Unsupported model/effort,
 refusals, incomplete responses and invalid assessments fail closed.
+
+### OpenAI configuration structure
+
+Connection and model settings live in `openai`; portable Responses generation
+settings live in `openai.common`; local llama.cpp extensions live in
+`openai.llama_cpp`. For example:
+
+```toml
+[agents.pi.approver]
+provider = "openai"
+request_timeout = 20
+
+[agents.pi.approver.openai]
+model = "local-model" # Use the model ID advertised by your server.
+base_url = "http://localhost:8080/v1"
+api_key = "local" # Use the credential required by your server.
+
+[agents.pi.approver.openai.common]
+effort = "low"
+temperature = 0.6
+top_p = 0.95
+max_output_tokens = 2048
+
+[agents.pi.approver.openai.llama_cpp]
+top_k = 20
+min_p = 0.0
+presence_penalty = 0.0
+repeat_penalty = 1.0
+reasoning_budget_tokens = 128
+```
+
+For global defaults, replace `agents.pi.approver` with `approver` in **all** table
+headers. Keep `provider`, `request_timeout`, `context_budget_bytes`, and
+`probability_threshold` in the parent approver table. TOML fields belong to the
+most recent table header, so place these parent fields before the nested tables.
+
+Edit advanced generation fields with `any-auto config --edit`; the interactive
+form writes the nested model, connection, and effort fields. Omitted values are
+not sent, preserving server defaults. Other providers reject an explicit
+`openai` table. Unknown fields and fields in the wrong group are errors.
+Configuration JSON and text output report nested values and their leaf sources,
+for example `openai.common.temperature` from `[agents.pi.approver.openai.common]`.
+
+| Field below `openai` | Accepted configuration values | Purpose |
+| --- | --- | --- |
+| `common.effort` | See effort support above | Maps to API `reasoning.effort` |
+| `common.temperature` | Finite, >= 0 | Sampling temperature; model may impose a narrower range |
+| `common.top_p` | 0 to 1 | Nucleus sampling |
+| `common.max_output_tokens` | 1 to 2147483647 | Total generated tokens, including reasoning |
+| `llama_cpp.top_k` | 0 to 2147483647 | Top-k sampling; 0 disables it |
+| `llama_cpp.min_p` | 0 to 1 | Minimum probability sampling |
+| `llama_cpp.presence_penalty` | -2 to 2 | Presence penalty supported by llama.cpp |
+| `llama_cpp.repeat_penalty` | Finite, >= 0 | Repetition penalty; 1 is neutral |
+| `llama_cpp.reasoning_budget_tokens` | -1 to 2147483647 | Thinking budget; 0 ends thinking immediately; -1 uses the server-configured budget |
+
+The groups organize configuration only: the HTTP request still sends the API's
+expected top-level sampling fields and `reasoning.effort`, without `common` or
+`llama_cpp` wrapper objects.
+
+### Migrating flat OpenAI configuration
+
+Flat OpenAI fields are rejected rather than silently ignored. Move `model`,
+`base_url`, and `api_key` from the approver table to its `openai` table. Move
+`effort`, `temperature`, `top_p`, and `max_output_tokens` to `openai.common`.
+Move `top_k`, `min_p`, `presence_penalty`, `repeat_penalty`, and
+`reasoning_budget_tokens` to `openai.llama_cpp`. Update each common/per-agent
+override separately. Other providers retain their existing TOML format.
+
+The existing environment variables still work: `ANY_AUTO_APPROVER_MODEL`,
+`ANY_AUTO_BASE_URL`, and `ANY_AUTO_API_KEY` override their `openai` fields;
+`ANY_AUTO_EFFORT` overrides `openai.common.effort`. An empty API key explicitly
+clears the configured key. There are no new generation environment variables.
+
+These are example values, not evaluated approval-quality defaults. The local
+llama.cpp Responses adapter forwards sampling parameters and maps
+`max_output_tokens` to its generation limit. Its separate reasoning budget
+requires a chat template with thinking end tags. It ends the thinking section
+so the model can produce an answer; it does not guarantee a wall-clock deadline.
+`openai.common.effort` remains a separate model/template-dependent control.
+
+The llama.cpp-specific fields are not portable to OpenAI's hosted Responses API.
+No capability probing or silent fallback is performed. A compatible URL alone
+does not prove that a server implements every field. Incomplete responses,
+including output-limit exhaustion, remain review failures.
 
 ## Jev runtime
 
@@ -173,7 +267,7 @@ Pi users do not need agy installed.
 | `ANY_AUTO_INSTANCE` | Operational instance name when --instance is omitted |
 | `ANY_AUTO_PROVIDER` | pi, cli, openai, agentapi, jev |
 | `ANY_AUTO_BASE_URL` | API root override, including the version prefix |
-| `ANY_AUTO_API_KEY` | API key value (overrides the configured `api_key`) |
+| `ANY_AUTO_API_KEY` | API key value (overrides `openai.api_key` for OpenAI, `api_key` for Jev) |
 | `ANY_AUTO_APPROVER_MODEL` | Model for the selected provider |
 | `ANY_AUTO_EFFORT` | Backend-specific effort |
 | `ANY_AUTO_MODEL`, `ANY_AUTO_CLI_MODEL` | Removed; configuration error. Use `ANY_AUTO_APPROVER_MODEL` |

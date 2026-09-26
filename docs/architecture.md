@@ -45,6 +45,14 @@ is permitted. Context values are not included in audit events. Backend child pro
 receive the caller's relevant environment explicitly instead of using the first starter's
 credentials or Desktop connection. Changes to context invalidate incompatible reviewer sessions.
 
+OpenAI configuration is represented by nested settings structs in
+`src/config/openai.rs`: connection/model settings, `common` Responses parameters,
+and `llama_cpp` extensions. Partial overlays merge by leaf before validation and
+conversion into an `OpenAiConfig` with a required model. The OpenAI backend maps
+these groups to wire fields; shared reviewer metadata uses provider-independent
+accessors. Nested API keys remain redacted in config output, while the actual key
+hash and effective generation settings participate in session invalidation.
+
 Configuration and audit data live under application-owned XDG directories. Plugin sources are grouped under `agy/` and `pi/`, and embedded in the binary.
 Only installed integration files belong in `.gemini` or Pi's extension directory. Installation previews mutations and
 validates selected agy JSON configurations before writing. Individual files are atomically

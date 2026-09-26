@@ -294,6 +294,12 @@ is added. any-auto returns explicit denials for errors and circuit-breaker retri
 because Turbo auto-approves ask/force_ask. Desktop/Pi installation does not change
 these CLI settings.
 
+OpenAI configuration uses `approver.openai` (model/connection),
+`approver.openai.common` (effort/generation), and `approver.openai.llama_cpp`
+(local extensions), with equivalent per-agent tables. The configuration form
+writes nested OpenAI tables; advanced generation fields are edited in TOML.
+See [configuration and migration](configuration.md#openai-configuration-structure).
+
 Stats includes only completed model reviews; local rules and human confirmations remain available in logs. Usage must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.
 
 ## Uninstall

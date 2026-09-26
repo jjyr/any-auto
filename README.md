@@ -140,6 +140,33 @@ effort = "low"
 `config` shows all agents and setting sources. Legacy configuration is not read.
 Logs/stats and sessions start fresh; see [configuration and directory details](docs/configuration.md#overview-tui-and-directories).
 
+### OpenAI-compatible local server
+
+OpenAI settings use nested tables; sampling parameters are optional:
+
+```toml
+[agents.pi.approver]
+provider = "openai"
+request_timeout = 20
+
+[agents.pi.approver.openai]
+model = "local-model"
+base_url = "http://localhost:8080/v1"
+api_key = "local"
+
+[agents.pi.approver.openai.common]
+temperature = 0.6
+max_output_tokens = 2048
+
+[agents.pi.approver.openai.llama_cpp]
+reasoning_budget_tokens = 128
+```
+
+Use your server's model ID and credential. The thinking budget requires llama.cpp
+and template support; these example values have not been evaluated for approval
+accuracy. For the hosted OpenAI API, use its URL/model/key and omit `llama_cpp`.
+See [all fields and migration from flat configuration](docs/configuration.md#openai-configuration-structure).
+
 ### Jev
 
 Switching to Jev can substantially reduce auto-approval latency and token usage
