@@ -142,3 +142,35 @@ fn shared_daemon_survives_partial_removal_and_stops_after_last_integration() {
     assert!(ok(home, &["uninstall", "--all"]).contains("Shared daemon stopped"));
     assert!(!home.join("daemon.sock").exists());
 }
+
+#[test]
+fn removing_cli_hook_restores_native_review_without_changing_rules() {
+    use serde_json::{Value, json};
+    for mode in ["always-proceed", "proceed-in-sandbox"] {
+        let dir = tempfile::tempdir().unwrap();
+        let home = dir.path();
+        ok(home, &["install", "--agents", "agy-cli"]);
+        let original = json!({"toolPermission":mode,"enableTerminalSandbox":false,
+            "permissions":{"allow":["command(custom)"]}});
+        write(
+            home,
+            ".gemini/antigravity-cli/settings.json",
+            &original.to_string(),
+        );
+        ok(home, &["uninstall", "--agents", "agy-cli", "--dry-run"]);
+        let path = home.join(".gemini/antigravity-cli/settings.json");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original.to_string());
+        ok(home, &["uninstall", "--agents", "agy-cli"]);
+        let actual: Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(
+            actual["toolPermission"],
+            if mode == "always-proceed" {
+                "request-review"
+            } else {
+                mode
+            }
+        );
+        assert_eq!(actual["permissions"], original["permissions"]);
+        assert_eq!(actual["enableTerminalSandbox"], false);
+    }
+}

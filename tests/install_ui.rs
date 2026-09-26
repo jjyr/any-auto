@@ -116,62 +116,111 @@ fn invalid_reviewer_config_never_writes() {
 }
 
 #[test]
-fn install_warns_on_other_pre_tool_use_hooks() {
-    let home = tempfile::tempdir().unwrap();
-    let config = home.path().join(".gemini/config");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(
-        config.join("hooks.json"),
-        r#"{
-            "orca-status": {
-                "PreToolUse": [{ "matcher": "*", "hooks": [{ "command": "./orca.sh" }] }]
+fn cli_install_enables_turbo_preserving_rules_and_reports_it_before_apply() {
+    use serde_json::{Value, json};
+    use std::fs;
+    for existing in [false, true] {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".gemini/antigravity-cli/settings.json");
+        let original = json!({"toolPermission":"request-review", "enableTerminalSandbox":true,
+            "permissions":{"allow":["command(custom)"],"deny":["command(secret)"],"ask":["command(review)"]},"custom":42});
+        if existing {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, original.to_string()).unwrap();
+        }
+        let dry = isolated_install(
+            home.path(),
+            &["install", "--agents", "agy-cli", "--dry-run"],
+        );
+        assert!(dry.status.success(), "{dry:?}");
+        assert!(String::from_utf8_lossy(&dry.stdout).contains("Enable Turbo mode"));
+        assert_eq!(path.exists(), existing);
+        if existing {
+            assert_eq!(fs::read_to_string(&path).unwrap(), original.to_string());
+        }
+        for _ in 0..2 {
+            let output = isolated_install(home.path(), &["install", "--agents", "agy-cli"]);
+            assert!(output.status.success(), "{output:?}");
+            let actual: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            assert_eq!(actual["toolPermission"], "always-proceed");
+            assert_eq!(actual["enableTerminalSandbox"], false);
+            if existing {
+                assert_eq!(actual["permissions"], original["permissions"]);
+                assert_eq!(actual["custom"], 42);
+            } else {
+                assert!(actual.get("permissions").is_none());
             }
-        }"#,
-    )
-    .unwrap();
-
-    let out = isolated_install(
-        home.path(),
-        &["install", "--agents", "agy-cli", "--dry-run"],
-    );
-    assert!(out.status.success(), "{out:?}");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("! PreToolUse hooks: other active hook(s) detected:"),
-        "stdout was: {stdout}"
-    );
-    assert!(stdout.contains("orca-status"), "stdout was: {stdout}");
-    assert!(
-        stdout.contains("https://github.com/jjyr/any-auto/issues/19"),
-        "stdout was: {stdout}"
-    );
+        }
+    }
 }
 
 #[test]
-fn doctor_warns_on_other_pre_tool_use_hooks() {
+fn malformed_cli_settings_fail_before_installing_hook() {
+    use std::fs;
     let home = tempfile::tempdir().unwrap();
-    let config = home.path().join(".gemini/config");
-    std::fs::create_dir_all(&config).unwrap();
-    std::fs::write(
-        config.join("hooks.json"),
-        r#"{
-            "orca-status": {
-                "PreToolUse": [{ "matcher": "*", "hooks": [{ "command": "./orca.sh" }] }]
-            }
-        }"#,
-    )
-    .unwrap();
+    let settings = home.path().join(".gemini/antigravity-cli/settings.json");
+    fs::create_dir_all(settings.parent().unwrap()).unwrap();
+    fs::write(&settings, "broken").unwrap();
+    let out = isolated_install(home.path(), &["install", "--agents", "agy-cli"]);
+    assert!(!out.status.success());
+    assert!(!home.path().join(".gemini/config/hooks.json").exists());
+    assert_eq!(fs::read_to_string(settings).unwrap(), "broken");
+}
 
-    let out = isolated_install(home.path(), &["doctor"]);
-    assert!(out.status.success(), "{out:?}");
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("! PreToolUse hooks: other active hook(s) detected:"),
-        "stdout was: {stdout}"
-    );
-    assert!(stdout.contains("orca-status"), "stdout was: {stdout}");
-    assert!(
-        stdout.contains("https://github.com/jjyr/any-auto/issues/19"),
-        "stdout was: {stdout}"
-    );
+#[test]
+fn doctor_checks_turbo_settings_without_modifying_them() {
+    use std::fs;
+    let cases = [
+        (None, false, "cannot read settings"),
+        (Some("broken"), false, "cannot read settings"),
+        (Some("[]"), false, "expected a JSON object"),
+        (Some("{}"), false, "request-review (default)"),
+        (
+            Some(r#"{"toolPermission":"always-proceed","enableTerminalSandbox":false}"#),
+            true,
+            "enableTerminalSandbox=false",
+        ),
+        (
+            Some(r#"{"toolPermission":"always-proceed"}"#),
+            true,
+            "false (default)",
+        ),
+        (
+            Some(r#"{"toolPermission":"always-proceed","enableTerminalSandbox":true}"#),
+            false,
+            "enableTerminalSandbox=true",
+        ),
+        (
+            Some(r#"{"toolPermission":"request-review","enableTerminalSandbox":false}"#),
+            false,
+            "toolPermission=request-review",
+        ),
+        (
+            Some(r#"{"toolPermission":"always-proceed","enableTerminalSandbox":"false"}"#),
+            false,
+            "invalid value",
+        ),
+        (Some(r#"{"toolPermission":null}"#), false, "invalid value"),
+    ];
+    for (contents, healthy, diagnostic) in cases {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join(".gemini/antigravity-cli/settings.json");
+        if let Some(contents) = contents {
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+        }
+        let out = isolated_install(home.path(), &["doctor"]);
+        assert!(out.status.success(), "{out:?}");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let status = if healthy {
+            "✓ CLI Turbo mode:"
+        } else {
+            "✗ CLI Turbo mode:"
+        };
+        assert!(stdout.contains(status), "{stdout}");
+        assert!(stdout.contains(diagnostic), "{stdout}");
+        assert_eq!(stdout.contains("Expected always-proceed with terminal sandbox off. Run: any-auto install --agents agy-cli"), !healthy, "{stdout}");
+        assert_eq!(fs::read_to_string(&path).ok().as_deref(), contents);
+        assert!(!home.path().join(".gemini/config/hooks.json").exists());
+    }
 }

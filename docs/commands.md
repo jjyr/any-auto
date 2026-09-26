@@ -108,15 +108,11 @@ chronological records (JSONL with --json) and cannot be combined with grouping.
 `--decision` accepts allow/deny/ask/force_ask. `--limit` defaults to 20.
 `show` outputs correlated events including backend results and Pi human decisions.
 A human confirmation is distinct from the model's ask/force_ask result.
-A positive Pi confirmation clears the entire denial window for its pending
-approval ID. A new validated user message also starts a fresh review window;
-retries and agent/tool messages do not. For agy, a `PostToolUse` callback matching
-the escalated conversation and step ends the pause. This callback records tool
-completion, not a claim of human approval, and does not grant permission to future
-actions. All subsequent actions are evaluated normally. Old or unrelated callbacks
-cannot clear the window. Reset reasons are recorded as `circuit_breaker_reset`.
-Existing installations must refresh hooks with `any-auto install --agents agy-cli`
-(or the corresponding installed agents) to register `post-tool`.
+The circuit breaker returns `deny` until a new validated user message starts a
+fresh review window. Retries, agent/tool messages, human-result callbacks, and
+PostToolUse completion callbacks cannot clear the window. New-user resets are
+recorded as `circuit_breaker_reset`. `post-tool` remains a no-op compatibility
+endpoint for old registrations; it never grants permission or resets denials.
 
 Daily UTC `approvals-YYYY-MM-DD.jsonl` files are shared across agents/instances and
 use cross-process file locks. New events use schema 3 and generic
@@ -279,6 +275,10 @@ The root invocation without arguments, bare `install`, and bare `uninstall` ente
 Other subcommands produce terminal text/JSON or perform their explicit action.
 Non-terminal interactive invocations fail with actionable guidance.
 `doctor` separates agent detection, integration presence and local backend availability.
+For CLI it also checks Turbo settings: `toolPermission` must be `always-proceed`
+and `enableTerminalSandbox` must be false (or omitted, whose default is false).
+Missing, malformed, or incompatible settings produce a diagnostic and a reinstall
+hint. Checks are read-only; they do not change settings or contact the model.
 It does not verify login, model access or Pi version compatibility.
 The terminal menu uses the same shared-daemon routing as CLI commands.
 Configure approvers includes Jev with model, API URL, API API key,
@@ -287,6 +287,12 @@ instructions through `config --edit`; `config --json` includes effective values
 and their sources. doctor checks the selected Jev API key locally and sends
 no API requests. Installation preserves these settings, and the update workflow
 refreshes integrations without rewriting reviewer configuration.
+CLI installation announces and enables Turbo mode: `toolPermission` is set to
+`always-proceed` and `enableTerminalSandbox` to `false`, creating settings.json
+if necessary. Existing allow/deny/ask rules are preserved; no command whitelist
+is added. any-auto returns explicit denials for errors and circuit-breaker retries
+because Turbo auto-approves ask/force_ask. Desktop/Pi installation does not change
+these CLI settings.
 
 Stats includes only completed model reviews; local rules and human confirmations remain available in logs. Usage must not be interpreted as total provider billing. No automatic log retention cleanup is enabled.
 
@@ -310,7 +316,8 @@ prompting. `--all` selects all integrations and conflicts with `--agents`.
 `--dry-run` previews only; without a selection it previews all integrations.
 Already removed integrations are successful no-ops.
 
-CLI removal deletes only the `any-auto` key from `~/.gemini/config/hooks.json`.
+CLI removal deletes the `any-auto` key from `~/.gemini/config/hooks.json` and
+changes `always-proceed` to `request-review` before removing the hook.
 Desktop removal deletes `sidecars["any-auto/approver"]` from the shared config and
 its two manifests after checking their name, executable, and arguments. Shared
 JSON files and unrelated entries remain. Pi removal deletes `extensions/any-auto.ts`
@@ -321,8 +328,9 @@ manifest whose any-auto ownership cannot be verified causes an error before
 writes. Files changed after the preview also cause an error before writes.
 
 Reviewer configuration, credentials, logs, history, persisted sessions, and the
-any-auto executable are retained. Existing CLI command permissions are retained
-because installation does not record which permissions were originally user-owned.
+any-auto executable are retained. Existing CLI command permissions are retained. Before removing the CLI hook,
+uninstall changes `always-proceed` to `request-review`; other modes and the
+terminal sandbox setting are preserved.
 There is no purge option. The shared daemon is kept while integrations remain and
 stopped after the last integration is removed; dry-run never stops it. A daemon
 stop failure is reported separately from the completed integration removal.

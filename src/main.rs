@@ -23,7 +23,7 @@ struct Cli {
 enum Commands {
     /// Read a PreToolUse JSON payload on stdin; emit exactly one result on stdout.
     Hook,
-    /// Record completion of an agy tool step (internal PostToolUse protocol).
+    /// Compatibility no-op for old agy PostToolUse registrations.
     PostTool,
     /// Record a Pi user confirmation (internal extension protocol).
     HumanResult,
@@ -160,16 +160,6 @@ async fn main() -> Result<()> {
                 .filter(|v| !v.is_empty())
                 .ok_or_else(|| anyhow::anyhow!("Missing request id"))?;
             anyhow::ensure!(value["allowed"].is_boolean(), "Missing human decision");
-            if value["allowed"] == true
-                && let Some(session) = value["conversation_id"].as_str().filter(|s| !s.is_empty())
-                && pipeline::Breaker::open(&config::state_dir(), session)?.human_result(id, true)?
-            {
-                audit::record(
-                    id,
-                    "circuit_breaker_reset",
-                    json!({"reason":"human_approval", "conversation_id":session}),
-                );
-            }
             audit::record(id, "human_result", value.clone());
         }
         Commands::Stats {
@@ -221,7 +211,7 @@ async fn main() -> Result<()> {
                         "truncated":bytes.len() > 1024*1024}),
                     );
                     let output =
-                        pipeline::result("ask", "Failed to parse hook stdin payload.", "", None);
+                        pipeline::result("deny", "Failed to parse hook stdin payload.", "", None);
                     audit::record(
                         &id,
                         "hook_result",

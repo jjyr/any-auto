@@ -23,8 +23,8 @@ A daemon never mutates its global environment to service another connection.
 Each conversation has isolated reviewer state; same-conversation requests
 serialize. Read-only tools bypass review, blocked shell commands are denied,
 remaining tools go through the configured reviewer. Three consecutive model
-denials (or four of the last five) trip the circuit breaker and request user
-review. Reviewer/infrastructure failures deny the action. Reviewer subprocesses
+denials (or four of the last five) trip the circuit breaker and deny further reviewed
+actions until a new validated user message. Reviewer/infrastructure failures deny the action. Reviewer subprocesses
 cannot recursively approve tool calls.
 
 Restart the Desktop agent after installation/update to reload its sidecar.

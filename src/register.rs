@@ -50,7 +50,7 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
         .as_str()
         .context("Plugin template requires name")?;
     let mut hooks: Value = serde_json::from_str(include_str!("../agy/hooks.json"))?;
-    for event in ["PreToolUse", "PostToolUse"] {
+    for event in ["PreToolUse"] {
         let entries = hooks[plugin_name][event]
             .as_array_mut()
             .context("Hook template requires tool events")?;
@@ -83,23 +83,11 @@ fn register_agy(cli_only: bool, desktop_only: bool, dry_run: bool) -> Result<()>
             Ok(())
         })?;
         let settings = config::home().join(".gemini/antigravity-cli/settings.json");
-        if settings.exists() {
-            update(&settings, dry_run, |v| {
-                let permissions = object_field(v, "permissions")?;
-                if permissions.get("allow").is_none() {
-                    permissions["allow"] = json!([]);
-                }
-                let allow = permissions["allow"]
-                    .as_array_mut()
-                    .context("permissions.allow must be an array")?;
-                for p in "gh npm npx yarn pnpm bun git python python3 pytest cargo go node make docker docker-compose curl cat echo ls mkdir cp touch grep find sh bash zsh head tail mise uv".split_whitespace() {
-                    let grant = json!(format!("command({p})"));
-                    if !allow.contains(&grant) { allow.push(grant); }
-                }
-                allow.sort_by_key(Value::to_string);
-                Ok(())
-            })?;
-        }
+        update(&settings, dry_run, |v| {
+            v["toolPermission"] = json!("always-proceed");
+            v["enableTerminalSandbox"] = json!(false);
+            Ok(())
+        })?;
     }
     if !cli_only {
         update(&base.join("config.json"), dry_run, |v| {

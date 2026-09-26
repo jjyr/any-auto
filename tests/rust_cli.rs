@@ -200,11 +200,11 @@ fn lifecycle_auto_spawn_fail_closed_and_breaker() {
     assert!(!s.socket.exists());
     assert_eq!(s.hook(&payload("echo $(rm -rf /)"))["decision"], "deny");
     assert!(!s.socket.exists());
-    assert_eq!(s.hook("broken")["decision"], "ask");
+    assert_eq!(s.hook("broken")["decision"], "deny");
     for _ in 0..3 {
         assert_eq!(s.hook(&payload("cargo test"))["decision"], "deny");
     }
-    assert_eq!(s.hook(&payload("cargo test"))["decision"], "force_ask");
+    assert_eq!(s.hook(&payload("cargo test"))["decision"], "deny");
     let status = s.run(&["daemon", "status"]);
     assert!(status.status.success());
     let v: Value = serde_json::from_slice(&status.stdout).unwrap();
@@ -291,11 +291,7 @@ fn registration_preserves_configuration_and_uses_absolute_binary() {
         .unwrap();
     assert!(command.contains(env!("CARGO_BIN_EXE_any-auto")));
     assert!(!command.contains("python"));
-    let post_command = v["any-auto"]["PostToolUse"][0]["hooks"][0]["command"]
-        .as_str()
-        .unwrap();
-    assert!(post_command.contains(env!("CARGO_BIN_EXE_any-auto")));
-    assert!(post_command.ends_with(" post-tool"));
+    assert!(v["any-auto"].get("PostToolUse").is_none());
     assert!(
         s.run(&["install", "--agents", "agy-cli,agy-desktop"])
             .status
@@ -761,7 +757,7 @@ fn logs_follow_waits_for_creation_and_exits_on_ctrl_c() {
             .is_err()
     );
     s.hook("invalid input");
-    assert_eq!(follower.next()["decision"], "ask");
+    assert_eq!(follower.next()["decision"], "deny");
     assert!(
         Command::new("/bin/kill")
             .args(["-INT", &follower.child.id().to_string()])

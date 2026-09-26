@@ -1,10 +1,6 @@
 pub mod agy;
 pub mod pi;
 
-pub use agy::{
-    OtherPreToolUseHook, detect_other_pre_tool_use_hooks, detect_other_pre_tool_use_hooks_in,
-    display_path,
-};
 pub(crate) use pi::pi_extension;
 
 use crate::{config, register};
@@ -99,12 +95,13 @@ fn installation_summary(agents: &[Agent]) -> Result<()> {
                 Agent::Pi => "install/update the approval extension",
             }
         );
-        if *agent == Agent::AgyCli
-            && config::home()
-                .join(".gemini/antigravity-cli/settings.json")
-                .exists()
-        {
-            println!("  ✓ permissions: add standard development commands to agy settings");
+        if *agent == Agent::AgyCli {
+            println!(
+                "  ! Enable Turbo mode: always-proceed, terminal sandbox off; any-auto will approve or deny tool calls."
+            );
+            println!(
+                "    Explicit permission rules are preserved. Turbo auto-approves ask/force_ask; any-auto blocks failures and circuit-breaker retries with deny."
+            );
         }
         let settings = config::reviewer_config_for(agent.mode())?;
         let source = settings
@@ -131,11 +128,6 @@ fn installation_summary(agents: &[Agent]) -> Result<()> {
                 "    probability threshold: {}",
                 settings.approver.probability_threshold
             );
-        }
-        if *agent == Agent::AgyCli
-            || (*agent == Agent::AgyDesktop && !agents.contains(&Agent::AgyCli))
-        {
-            agy::print_pre_tool_use_hooks_check();
         }
     }
     println!(
@@ -284,19 +276,6 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     if agents.contains(&Agent::Pi) {
         println!("  ✓ Pi: run /reload or restart Pi to load the updated extension.");
     }
-    if cli || desktop {
-        let other_hooks = agy::detect_other_pre_tool_use_hooks();
-        if !other_hooks.is_empty() {
-            let names: Vec<_> = other_hooks
-                .iter()
-                .map(|h| format!("'{}'", h.name))
-                .collect();
-            println!(
-                "  ! Other active PreToolUse hook(s) ({}) were detected. If manual prompts persist, see https://github.com/jjyr/any-auto/issues/19.",
-                names.join(", ")
-            );
-        }
-    }
     println!("Check setup: any-auto doctor. Change reviewers: any-auto config --edit.");
     Ok(())
 }
@@ -361,7 +340,7 @@ pub fn doctor() -> Result<()> {
         }
 
         if agent == Agent::AgyCli {
-            agy::print_pre_tool_use_hooks_check();
+            agy::print_cli_turbo_check();
         }
     }
     Ok(())

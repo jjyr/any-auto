@@ -204,8 +204,8 @@ Jev probability gates, evidence checks and existing local absolute prohibitions.
 It does not use Codex's model-generated allow/deny outcome. Diagnostics indicate
 whether the authorization gate was required for the chosen route.
 
-Backend decisions are binary. The pipeline may independently return `force_ask`
-when the circuit breaker trips. Jev denials, including uncertainty and missing
+Backend decisions are binary. The pipeline returns `deny` when the circuit breaker trips, until a new
+validated user message reopens review. Jev denials, including uncertainty and missing
 evidence, count toward that breaker. Logs identify this policy as `policy-decision-v6`.
 
 Probabilities must be finite, in `[0,1]`, cover exactly the defined options,
