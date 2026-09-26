@@ -167,3 +167,111 @@ fn old_routing_names_are_rejected_without_aliases() {
             .contains("Invalid TOML or unsupported configuration field")
     );
 }
+
+#[test]
+fn nested_openai_environment_overrides_sources_and_provider_reset() {
+    use serde_json::Value;
+    let home = tempfile::tempdir().unwrap();
+    let dir = home.path().join(".config/any-auto");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(
+        dir.join("config.toml"),
+        r#"
+[approver]
+provider = "openai"
+request_timeout = 31
+[approver.openai]
+model = "configured-model"
+base_url = "http://localhost:1234/v1"
+api_key = "nested-fixture-secret"
+[approver.openai.common]
+effort = "low"
+temperature = 0.6
+[approver.openai.llama_cpp]
+reasoning_budget_tokens = 128
+[agents.pi.approver.openai.common]
+top_p = 0.9
+"#,
+    )
+    .unwrap();
+    let out = command(home.path())
+        .args(["config", "--agent", "pi", "--json"])
+        .env("ANY_AUTO_APPROVER_MODEL", "environment-model")
+        .env("ANY_AUTO_EFFORT", "none")
+        .env("ANY_AUTO_BASE_URL", "http://localhost:5678/v1")
+        .env("ANY_AUTO_API_KEY", "env-fixture-secret")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let raw = String::from_utf8(out.stdout).unwrap();
+    assert!(!raw.contains("fixture-secret"));
+    let v: Value = serde_json::from_str(&raw).unwrap();
+    let openai = &v["reviewer"]["approver"]["openai"];
+    assert_eq!(openai["model"], "environment-model");
+    assert_eq!(openai["base_url"], "http://localhost:5678/v1");
+    assert_eq!(openai["api_key"], "[REDACTED]");
+    assert_eq!(openai["common"]["effort"], "none");
+    assert_eq!(openai["common"]["temperature"], 0.6);
+    assert_eq!(openai["common"]["top_p"], 0.9);
+    let sources = &v["reviewer"]["approver_sources"];
+    for (field, variable) in [
+        ("model", "ANY_AUTO_APPROVER_MODEL"),
+        ("common.effort", "ANY_AUTO_EFFORT"),
+        ("base_url", "ANY_AUTO_BASE_URL"),
+        ("api_key", "ANY_AUTO_API_KEY"),
+    ] {
+        assert_eq!(sources[format!("openai.{field}")], variable);
+    }
+    assert_eq!(
+        sources["openai.common.temperature"],
+        "[approver.openai.common]"
+    );
+    assert_eq!(
+        sources["openai.common.top_p"],
+        "[agents.pi.approver.openai.common]"
+    );
+
+    let out = command(home.path())
+        .args(["config", "--agent", "pi", "--json"])
+        .env("ANY_AUTO_API_KEY", "")
+        .env_remove("ANY_AUTO_BASE_URL")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(v["reviewer"]["approver"]["openai"]["api_key"], "");
+
+    let out = command(home.path())
+        .args(["config", "--agent", "pi", "--json"])
+        .env("ANY_AUTO_PROVIDER", "pi")
+        .env("ANY_AUTO_APPROVER_MODEL", "pi-model")
+        .env_remove("ANY_AUTO_API_KEY")
+        .env_remove("ANY_AUTO_BASE_URL")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(v["reviewer"]["approver"]["openai"].is_null());
+    assert_eq!(v["reviewer"]["approver"]["model"], "pi-model");
+    assert_eq!(v["reviewer"]["approver"]["request_timeout"], 31);
+    assert_eq!(
+        v["reviewer"]["approver_sources"]["openai.llama_cpp.reasoning_budget_tokens"],
+        "default"
+    );
+
+    let out = command(home.path())
+        .args(["config", "--agent", "pi"])
+        .env_remove("ANY_AUTO_API_KEY")
+        .env_remove("ANY_AUTO_BASE_URL")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(text.contains("openai.common.temperature"));
+    assert!(text.contains("[approver.openai.common]"));
+    assert!(!text.contains("nested-fixture-secret"));
+}
