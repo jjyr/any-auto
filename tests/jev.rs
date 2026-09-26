@@ -612,9 +612,7 @@ fn jev_command_surface_supports_configuration_diagnostics_lifecycle_and_queries(
     assert_eq!(fs::read(&path).unwrap(), original);
     let doctor = h.output(&["doctor"]);
     assert_eq!(
-        doctor
-            .matches("approver=jev locally_available=true")
-            .count(),
+        doctor.matches("approver: jev (locally available)").count(),
         3
     );
     let no_key = h
@@ -626,7 +624,7 @@ fn jev_command_surface_supports_configuration_diagnostics_lifecycle_and_queries(
     assert!(no_key.status.success());
     assert_eq!(
         String::from_utf8_lossy(&no_key.stdout)
-            .matches("approver=jev locally_available=false")
+            .matches("approver: jev (locally unavailable)")
             .count(),
         3
     );

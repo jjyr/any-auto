@@ -114,3 +114,64 @@ fn invalid_reviewer_config_never_writes() {
     assert!(!home.path().join(".gemini").exists());
     assert!(!home.path().join(".pi").exists());
 }
+
+#[test]
+fn install_warns_on_other_pre_tool_use_hooks() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join(".gemini/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("hooks.json"),
+        r#"{
+            "orca-status": {
+                "PreToolUse": [{ "matcher": "*", "hooks": [{ "command": "./orca.sh" }] }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let out = isolated_install(
+        home.path(),
+        &["install", "--agents", "agy-cli", "--dry-run"],
+    );
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("! PreToolUse hooks: other active hook(s) detected:"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("orca-status"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("https://github.com/jjyr/any-auto/issues/19"),
+        "stdout was: {stdout}"
+    );
+}
+
+#[test]
+fn doctor_warns_on_other_pre_tool_use_hooks() {
+    let home = tempfile::tempdir().unwrap();
+    let config = home.path().join(".gemini/config");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(
+        config.join("hooks.json"),
+        r#"{
+            "orca-status": {
+                "PreToolUse": [{ "matcher": "*", "hooks": [{ "command": "./orca.sh" }] }]
+            }
+        }"#,
+    )
+    .unwrap();
+
+    let out = isolated_install(home.path(), &["doctor"]);
+    assert!(out.status.success(), "{out:?}");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("! PreToolUse hooks: other active hook(s) detected:"),
+        "stdout was: {stdout}"
+    );
+    assert!(stdout.contains("orca-status"), "stdout was: {stdout}");
+    assert!(
+        stdout.contains("https://github.com/jjyr/any-auto/issues/19"),
+        "stdout was: {stdout}"
+    );
+}
