@@ -62,8 +62,8 @@ processing and input-token costs, depending on the provider's caching and pricin
 
 Idle sessions leave memory after five minutes; Pi RPC children are terminated and reaped.
 The next request restores persisted state. Each Pi session owns its own RPC process.
-Repeated AI-review denials trip the circuit breaker, requiring user review on
-subsequent requests. Decisions and reasons are logged locally. See the
+Repeated AI-review denials trip the circuit breaker, denying further reviewed
+actions until a new validated user message starts a fresh review window. Decisions and reasons are logged locally. See the
 [pipeline details](docs/sidecars.md).
 
 ## Install
@@ -74,8 +74,6 @@ Download a [GitHub Release](https://github.com/jjyr/any-auto/releases/latest)
 (macOS or Linux, ARM64 or x86_64). Set the release tag and your platform target:
 
 ```bash
-VERSION=v0.4.5
-TARGET=aarch64-apple-darwin
 curl -fLO "https://github.com/jjyr/any-auto/releases/download/$VERSION/any-auto-$VERSION-$TARGET.tar.gz"
 tar -xzf "any-auto-$VERSION-$TARGET.tar.gz"
 mkdir -p ~/.local/bin

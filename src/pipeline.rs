@@ -105,14 +105,14 @@ impl Breaker {
         let n = self.state["consecutive_denials"].as_u64().unwrap_or(0);
         if n >= 3 {
             return Some(format!(
-                "Circuit breaker tripped: {n} consecutive denials exceeded threshold (3). Halting loop to prompt user."
+                "Circuit breaker tripped: {n} consecutive denials exceeded threshold (3). Further reviewed actions are denied until a new user message."
             ));
         }
         if let Some(h) = self.state["history"].as_array() {
             let denials = h.iter().rev().take(5).filter(|v| **v == "deny").count();
             if h.len() >= 5 && denials >= 4 && h.last() == Some(&json!("deny")) {
                 return Some(format!(
-                    "Circuit breaker tripped: {denials}/5 denials in recent window. Halting loop to prompt user."
+                    "Circuit breaker tripped: {denials}/5 denials in recent window. Further reviewed actions are denied until a new user message."
                 ));
             }
         }
@@ -138,27 +138,6 @@ impl Breaker {
         self.state["authorization_epoch"] = json!(epoch);
         self.reset()?;
         Ok(had_denials)
-    }
-    fn escalate(&mut self, id: &str, step: Option<u64>) -> Result<()> {
-        self.state["pending_escalation"] = json!({"request_id":id,"step":step});
-        self.save()
-    }
-    pub fn human_result(&mut self, id: &str, allowed: bool) -> Result<bool> {
-        if !allowed || self.state["pending_escalation"]["request_id"] != id {
-            return Ok(false);
-        }
-        self.reset()?;
-        Ok(true)
-    }
-    fn completed_step(&mut self, step: u64) -> Result<Option<String>> {
-        if self.state["pending_escalation"]["step"].as_u64() != Some(step) {
-            return Ok(None);
-        }
-        let id = self.state["pending_escalation"]["request_id"]
-            .as_str()
-            .map(str::to_owned);
-        self.reset()?;
-        Ok(id)
     }
     fn save(&self) -> Result<()> {
         let tmp = self.path.with_extension("tmp");
@@ -348,16 +327,12 @@ async fn evaluate_inner(
                     "conversation_id":conversation_id(payload)}),
                 );
             }
-            let reason = b.tripped();
-            if reason.is_some() {
-                b.escalate(id, payload["stepIdx"].as_u64())?;
-            }
-            Ok(reason)
+            Ok(b.tripped())
         })();
         match update {
             Ok(Some(reason)) => {
                 *stage = "circuit_breaker";
-                return result("force_ask", &reason, tool, None);
+                return result("deny", &reason, tool, None);
             }
             Ok(None) => {}
             Err(error) => {
@@ -406,27 +381,9 @@ async fn evaluate_inner(
     )
 }
 
-/// Agy's PostToolUse callback identifies a completed step, not an approval.
-/// Only the exact step that previously received force_ask may end the pause.
-pub async fn post_tool(payload: &Value) -> Result<()> {
-    if config::mode() == config::Mode::Pi {
-        return Ok(());
-    }
-    let Some(session) = crate::sessions::user_session_id(payload) else {
-        return Ok(());
-    };
-    let Some(step) = payload["stepIdx"].as_u64() else {
-        return Ok(());
-    };
-    let mut breaker = Breaker::open_for_review(&config::state_dir(), session).await?;
-    if let Some(id) = breaker.completed_step(step)? {
-        audit::record(
-            &id,
-            "circuit_breaker_reset",
-            json!({"reason":"escalated_tool_finished",
-            "conversation_id":session,"step":step}),
-        );
-    }
+/// Compatibility endpoint for previously installed PostToolUse hooks.
+/// Tool completion is not new user authorization and cannot reset a hard denial.
+pub async fn post_tool(_payload: &Value) -> Result<()> {
     Ok(())
 }
 
@@ -468,7 +425,7 @@ fn normalize(payload: &Value) -> Value {
 mod tests {
     use super::*;
     #[test]
-    fn breaker_resets_entire_window_only_on_new_user_or_matching_completion() {
+    fn breaker_resets_entire_window_only_on_new_user_message() {
         let root = tempfile::tempdir().unwrap();
         let mut b = Breaker::open(root.path(), "session").unwrap();
         assert!(!b.observe_user("user-1").unwrap());
@@ -477,28 +434,12 @@ mod tests {
         }
         assert!(!b.observe_user("user-1").unwrap());
         assert!(b.tripped().is_some());
-        b.escalate("request-1", Some(10)).unwrap();
-        assert!(!b.human_result("other", true).unwrap());
-        assert!(!b.human_result("request-1", false).unwrap());
-        assert!(b.completed_step(11).unwrap().is_none());
-        assert!(b.tripped().is_some());
-        assert!(b.human_result("request-1", true).unwrap());
-        b.record("deny").unwrap();
-        assert!(b.tripped().is_none(), "old rolling window must be gone");
-        assert!(b.observe_user("user-2").unwrap());
-        for _ in 0..3 {
-            b.record("deny").unwrap();
-        }
-        b.escalate("request-2", Some(20)).unwrap();
         drop(b);
         let mut b = Breaker::open(root.path(), "session").unwrap();
-        assert_eq!(b.completed_step(20).unwrap().as_deref(), Some("request-2"));
-        assert!(
-            b.completed_step(20).unwrap().is_none(),
-            "callback is consumed once"
-        );
+        assert!(b.tripped().is_some());
+        assert!(b.observe_user("user-2").unwrap());
         b.record("deny").unwrap();
-        assert!(b.tripped().is_none());
+        assert!(b.tripped().is_none(), "old rolling window must be gone");
     }
     #[tokio::test]
     async fn cancelled_breaker_wait_does_not_retain_the_lock() {

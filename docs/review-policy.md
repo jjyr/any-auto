@@ -108,7 +108,7 @@ All reviewed providers now enforce required-evidence completeness locally.
 Read-only bypasses, command blacklists, circuit-breaker behavior and the configurable
 user-message window remain at the existing common boundary. Reviewers still
 cannot invoke tools. A `needs_confirmation` classification yields deny; only
-the outer circuit breaker initiates the existing human-confirmation flow.
+the outer circuit breaker denies further reviewed actions until a new validated user message.
 
 Policy/rubric versions are `policy-decision-v6` and `review-v6`. Session fingerprints
 include the policy version and effective prompt so old reviewer sessions are not

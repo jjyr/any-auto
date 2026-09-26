@@ -612,9 +612,7 @@ fn jev_command_surface_supports_configuration_diagnostics_lifecycle_and_queries(
     assert_eq!(fs::read(&path).unwrap(), original);
     let doctor = h.output(&["doctor"]);
     assert_eq!(
-        doctor
-            .matches("approver=jev locally_available=true")
-            .count(),
+        doctor.matches("approver: jev (locally available)").count(),
         3
     );
     let no_key = h
@@ -626,7 +624,7 @@ fn jev_command_surface_supports_configuration_diagnostics_lifecycle_and_queries(
     assert!(no_key.status.success());
     assert_eq!(
         String::from_utf8_lossy(&no_key.stdout)
-            .matches("approver=jev locally_available=false")
+            .matches("approver: jev (locally unavailable)")
             .count(),
         3
     );
@@ -696,7 +694,7 @@ fn jev_uncertainty_denies_until_pipeline_circuit_breaker_takes_over() {
         );
     }
     let result = h.hook(&request(), "key");
-    assert_eq!(result["decision"], "force_ask");
+    assert_eq!(result["decision"], "deny");
     assert!(
         result["reason"]
             .as_str()
@@ -937,10 +935,10 @@ fn fresh_user_message_reopens_review_without_automatically_allowing() {
     for _ in 0..3 {
         assert_eq!(h.hook(&req, "key")["decision"], "deny");
     }
-    assert_eq!(h.hook(&req, "key")["decision"], "force_ask");
+    assert_eq!(h.hook(&req, "key")["decision"], "deny");
     // Changing a tool or retrying does not signal a new user turn.
     req["toolCall"]["args"]["content"] = json!("retry");
-    assert_eq!(h.hook(&req, "key")["decision"], "force_ask");
+    assert_eq!(h.hook(&req, "key")["decision"], "deny");
     req["authorization"]["latest_user_message"]["id"] = json!("user-2");
     req["authorization"]["latest_user_message"]["text"] = json!("Yes, create the file locally.");
     assert_eq!(h.hook(&req, "key")["decision"], "deny");
@@ -951,67 +949,59 @@ fn fresh_user_message_reopens_review_without_automatically_allowing() {
 }
 
 #[test]
-fn pi_confirmation_clears_the_entire_denial_window() {
-    let h = Harness::new();
-    let (url, worker) = server(vec![ok(), ok(), ok(), ok(), ok()]);
-    h.configure(&url, "probability_threshold=0.95\n");
-    for _ in 0..3 {
-        assert_eq!(h.hook(&request(), "key")["decision"], "deny");
-    }
-    let ask = h.hook(&request(), "key");
-    assert_eq!(ask["decision"], "force_ask");
-    h.submit(
-        &["human-result", "--agent", "pi"],
-        &json!({"request_id":ask["request_id"],
-        "conversation_id":"jev-session", "allowed":true}),
-    );
-    for _ in 0..2 {
-        assert_eq!(h.hook(&request(), "key")["decision"], "deny");
-    }
-    assert_eq!(worker.join().unwrap().len(), 5);
-    assert!(h.logs().contains("human_approval"));
-}
-
-#[test]
-fn agy_completed_escalation_resumes_automatic_review() {
-    let h = Harness::new();
-    let (url, worker) = server(vec![ok(), ok(), ok(), ok(), ok()]);
-    h.configure(&url, "probability_threshold=0.95\n");
-    let mut req = request();
-    for step in 1..=3 {
-        req["stepIdx"] = json!(step);
-        assert_eq!(
-            h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
-            "deny"
+fn old_confirmation_and_completion_cannot_clear_hard_denials() {
+    for agent in ["pi", "agy-cli"] {
+        let h = Harness::new();
+        let (url, worker) = server(vec![ok(), ok(), ok(), ok()]);
+        h.configure(&url, "probability_threshold=0.95\n");
+        let mut req = request();
+        for step in 1..=3 {
+            req["stepIdx"] = json!(step);
+            assert_eq!(
+                h.submit(&["hook", "--agent", agent], &req)["decision"],
+                "deny"
+            );
+        }
+        req["stepIdx"] = json!(4);
+        let blocked = h.submit(&["hook", "--agent", agent], &req);
+        assert_eq!(blocked["decision"], "deny");
+        assert!(
+            blocked["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Circuit breaker")
         );
-    }
-    req["stepIdx"] = json!(4);
-    assert_eq!(
-        h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
-        "force_ask"
-    );
-    // An unrelated completion cannot release the pending escalation.
-    h.submit(
-        &["post-tool", "--agent", "agy-cli"],
-        &json!({"conversationId":"jev-session","stepIdx":3}),
-    );
-    assert_eq!(
-        h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
-        "force_ask"
-    );
-    h.submit(
-        &["post-tool", "--agent", "agy-cli"],
-        &json!({"conversationId":"jev-session","stepIdx":4}),
-    );
-    for step in 5..=6 {
-        req["stepIdx"] = json!(step);
-        assert_eq!(
-            h.submit(&["hook", "--agent", "agy-cli"], &req)["decision"],
-            "deny"
+        h.submit(
+            &["human-result", "--agent", agent],
+            &json!({
+                "request_id":blocked["request_id"].as_str().unwrap_or("old-escalation"),
+                "conversation_id":"jev-session", "allowed":true
+            }),
         );
+        h.submit(
+            &["post-tool", "--agent", agent],
+            &json!({"conversationId":"jev-session","stepIdx":4}),
+        );
+        let still_blocked = h.submit(&["hook", "--agent", agent], &req);
+        assert!(
+            still_blocked["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Circuit breaker")
+        );
+        req["authorization"]["latest_user_message"]["id"] = json!("user-2");
+        let reviewed = h.submit(&["hook", "--agent", agent], &req);
+        assert_eq!(reviewed["decision"], "deny");
+        assert!(
+            !reviewed["reason"]
+                .as_str()
+                .unwrap()
+                .contains("Circuit breaker")
+        );
+        assert_eq!(worker.join().unwrap().len(), 4);
+        assert!(h.logs().contains("new_user_message"));
+        assert!(!h.logs().contains("escalated_tool_finished"));
     }
-    assert_eq!(worker.join().unwrap().len(), 5);
-    assert!(h.logs().contains("escalated_tool_finished"));
 }
 
 fn evaluation_case(id: &str, command: &str, decision: &str) -> Value {

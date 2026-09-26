@@ -161,7 +161,7 @@ For authorization, sum medium and high because either category is accepted by th
 
 Backend decisions are now strictly allow / deny (decision policy `jev-decision-v2`).
 Uncertainty and missing evidence deny the action without opening a confirmation UI.
-Reserve `force_ask` for the existing pipeline circuit breaker. All Jev denials count
+The pipeline circuit breaker returns `deny`, not `force_ask`, until a new validated user message. All Jev denials count
 toward that breaker, including missing evidence and unmet thresholds. The shared
 conversational parser also maps ask / force_ask and other unsupported outcomes to deny.
 
@@ -264,7 +264,7 @@ Required validation includes:
 - Contract tests: valid Choice responses, approximate probability sums with unchanged approval gates, missing fields, unknown options, incorrect types, invalid probabilities, choice not matching a maximum, extra metadata, and absent usage. Verify that invalid cases cannot produce an incorrect allow.
 - Policy tests: missing authorization, revoked approval, out-of-scope arguments, read-only/build operations, deployment/publishing, credential exfiltration, .git destruction, unknown scripts, truncated commands, adversarial state, branch changes, English/Chinese requests, and conflicting question results. Check rule ordering, the default threshold of 0.9, user overrides including 0 and 1, invalid configuration, and exact threshold boundaries. Verify latest-message provenance and preservation of earlier constraints for all backends.
 - HTTP tests: no retries for 401/422; backoff for 429/529; Retry-After beyond the budget; timeout/cancellation; disabled redirects; oversized responses; no credentials or sensitive bodies in logs.
-- Regression tests: preserve other backends' session/retry behavior; no Jev session persistence or cross-user credential reuse; correct cleanup on configuration changes; binary backend outcomes; pipeline-only human escalation; correct circuit breaker, logging, and statistics contracts.
+- Regression tests: preserve other backends' session/retry behavior; no Jev session persistence or cross-user credential reuse; correct cleanup on configuration changes; binary backend outcomes; pipeline hard denials; correct circuit breaker, logging, and statistics contracts.
 - Measurements: dangerous-action false-allow counts/rates, ordinary-action auto-approval rate, human-confirmation rate, false-denial rate, p50/p95/p99 latency, 429/529 frequency, and token cost, grouped by model, language, and agent. Include high-confidence errors in the analysis.
 
 Before acceptance, confirm whether an official machine-readable OpenAPI schema is available, actual model and usage response behavior, the chosen third party's authentication/path compatibility, agy's authorization context source, and performance on Chinese and adversarial commands. Do not promise idempotency, cross-request caching, a complete error-body schema, or data retention behavior not established by the HTTP reference. The Models page says customer requests are not used for training, but enterprise ZDR depends on terms; that does not establish zero retention for every account.

@@ -75,6 +75,23 @@ fn plan(agent: Agent) -> Result<Vec<Change>> {
             false
         };
         if removed {
+            // Restore native review before removing the CLI approval hook.
+            if agent == Agent::AgyCli {
+                let settings = config::home().join(".gemini/antigravity-cli/settings.json");
+                if let Some(original) = read(&settings)? {
+                    let mut value: Value = serde_json::from_slice(&original)
+                        .with_context(|| format!("Invalid JSON in {}", settings.display()))?;
+                    ensure!(value.is_object(), "Expected CLI settings object");
+                    if value["toolPermission"] == "always-proceed" {
+                        value["toolPermission"] = Value::String("request-review".into());
+                        changes.push(Change {
+                            path: settings,
+                            before: original,
+                            after: Some(serde_json::to_vec_pretty(&value)?),
+                        });
+                    }
+                }
+            }
             changes.push(Change {
                 path,
                 before,
@@ -179,7 +196,7 @@ pub async fn run(options: Options) -> Result<()> {
                 println!(
                     "  {} {}",
                     if change.after.is_some() {
-                        "Remove any-auto registration from"
+                        "Update"
                     } else {
                         "Delete"
                     },
@@ -193,6 +210,11 @@ pub async fn run(options: Options) -> Result<()> {
         "Keep reviewer configuration, credentials, logs, history, sessions, and the any-auto executable."
     );
     println!("Unselected integrations and existing command permissions are preserved.");
+    if selected.contains(&Agent::AgyCli) {
+        println!(
+            "Before removing the CLI hook, change Turbo (always-proceed) to request-review. Terminal sandbox settings are preserved."
+        );
+    }
     let none_remaining = plans
         .iter()
         .all(|(agent, planned)| selected.contains(agent) || planned.is_empty());

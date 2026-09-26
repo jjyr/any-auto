@@ -12,18 +12,6 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "any-auto post-tool",
-            "timeout": 10
-          }
-        ]
-      }
     ]
   }
 }

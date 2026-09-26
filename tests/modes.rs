@@ -221,7 +221,7 @@ fn cli_errors_fail_closed_without_switching_backend_and_breakers_are_separate() 
         for _ in 0..3 {
             assert_eq!(h.hook(None, false)["decision"], "deny");
         }
-        assert_eq!(h.hook(None, false)["decision"], "force_ask");
+        assert_eq!(h.hook(None, false)["decision"], "deny");
         assert_eq!(h.hook(None, true)["decision"], "allow");
     }
 }

@@ -1,8 +1,13 @@
+pub mod agy;
+pub mod pi;
+
+pub(crate) use pi::pi_extension;
+
 use crate::{config, register};
 use anyhow::{Result, bail};
 use clap::{Args, ValueEnum};
 use dialoguer::{Confirm, MultiSelect};
-use std::{io::IsTerminal, path::PathBuf};
+use std::io::IsTerminal;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 pub enum Agent {
@@ -10,6 +15,7 @@ pub enum Agent {
     AgyDesktop,
     Pi,
 }
+
 impl Agent {
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -18,6 +24,7 @@ impl Agent {
             Self::Pi => "pi",
         }
     }
+
     fn mode(self) -> config::Mode {
         match self {
             Self::AgyCli => config::Mode::Cli,
@@ -25,84 +32,76 @@ impl Agent {
             Self::Pi => config::Mode::Pi,
         }
     }
+
     fn installed(self) -> bool {
-        if self == Self::Pi {
-            return pi_extension().is_file();
+        match self {
+            Self::AgyCli => agy::is_cli_installed(),
+            Self::AgyDesktop => agy::is_desktop_installed(),
+            Self::Pi => pi::is_installed(),
         }
-        let base = config::home().join(".gemini/config");
-        let path = base.join(if self == Self::AgyCli {
-            "hooks.json"
-        } else {
-            "config.json"
-        });
-        std::fs::read(path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .is_some_and(|value| match self {
-                Self::AgyCli => value.get("any-auto").is_some(),
-                Self::AgyDesktop => value["sidecars"].get("any-auto/approver").is_some(),
-                Self::Pi => unreachable!(),
-            })
     }
+
     fn detected(self) -> bool {
         match self {
-            Self::AgyCli => {
-                executable("agy")
-                    || config::home()
-                        .join(".gemini/antigravity-cli/bin/agy")
-                        .is_file()
-            }
-            Self::AgyDesktop => {
-                executable("antigravity")
-                    || [
-                        PathBuf::from("/Applications/Antigravity.app"),
-                        config::home().join("Applications/Antigravity.app"),
-                    ]
-                    .iter()
-                    .any(|p| p.is_dir())
-            }
-            Self::Pi => executable("pi"),
+            Self::AgyCli => agy::is_cli_detected(),
+            Self::AgyDesktop => agy::is_desktop_detected(),
+            Self::Pi => pi::is_detected(),
         }
     }
 }
-pub(crate) fn pi_extension() -> PathBuf {
-    std::env::var_os("PI_CODING_AGENT_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| config::home().join(".pi/agent"))
-        .join("extensions/any-auto.ts")
+
+pub(crate) fn executable(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            let path = dir.join(name);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                path.metadata()
+                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            }
+            #[cfg(not(unix))]
+            {
+                path.is_file()
+            }
+        })
+    })
 }
 
 fn installation_summary(agents: &[Agent]) -> Result<()> {
     println!("\nInstallation summary");
     for agent in agents {
         println!(
-            "\n{} {} integration{}",
+            "\n{} {} integration:",
             if agent.installed() {
                 "Update"
             } else {
                 "Install"
             },
-            agent.name(),
-            if agent.detected() {
-                ""
-            } else {
-                " (agent not detected; pre-install)"
-            }
+            agent.name()
         );
+
+        if agent.detected() {
+            println!("  ✓ agent detected");
+        } else {
+            println!("  ✗ agent not detected (pre-install)");
+        }
+
         println!(
-            "  Action: {}",
+            "  ✓ action: {}",
             match agent {
                 Agent::AgyCli => "install/update the approval hook",
                 Agent::AgyDesktop => "enable/update the approval sidecar",
                 Agent::Pi => "install/update the approval extension",
             }
         );
-        if *agent == Agent::AgyCli
-            && config::home()
-                .join(".gemini/antigravity-cli/settings.json")
-                .exists()
-        {
-            println!("  Add standard development command permissions to existing agy settings.");
+        if *agent == Agent::AgyCli {
+            println!(
+                "  ! Enable Turbo mode: always-proceed, terminal sandbox off; any-auto will approve or deny tool calls."
+            );
+            println!(
+                "    Explicit permission rules are preserved. Turbo auto-approves ask/force_ask; any-auto blocks failures and circuit-breaker retries with deny."
+            );
         }
         let settings = config::reviewer_config_for(agent.mode())?;
         let source = settings
@@ -118,15 +117,15 @@ fn installation_summary(agents: &[Agent]) -> Result<()> {
             format!("existing configuration: {source}")
         };
         println!(
-            "  Reviewer: {} ({source})",
+            "  ✓ approver: {} ({source})",
             settings.approver.provider.as_str()
         );
         if let Some(model) = settings.approver.model {
-            println!("  Model: {model}");
+            println!("    model: {model}");
         }
         if settings.approver.provider == config::Provider::Jev {
             println!(
-                "  Probability threshold: {}",
+                "    probability threshold: {}",
                 settings.approver.probability_threshold
             );
         }
@@ -146,23 +145,6 @@ fn installation_summary(agents: &[Agent]) -> Result<()> {
     Ok(())
 }
 
-fn executable(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| {
-            let path = dir.join(name);
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                path.metadata()
-                    .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            }
-            #[cfg(not(unix))]
-            {
-                path.is_file()
-            }
-        })
-    })
-}
 #[derive(Args, Debug, Default)]
 pub struct Options {
     /// Install all detected agents without prompting.
@@ -181,12 +163,15 @@ pub struct Options {
     #[arg(long)]
     dry_run: bool,
 }
+
 pub fn run(options: Options) -> Result<()> {
     run_with_interaction(options, std::env::args_os().count() == 2)
 }
+
 pub fn wizard() -> Result<()> {
     run_with_interaction(Options::default(), true)
 }
+
 fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     let all = [Agent::AgyCli, Agent::AgyDesktop, Agent::Pi];
     let mut agents = options.agents;
@@ -283,43 +268,50 @@ fn run_with_interaction(options: Options, interactive: bool) -> Result<()> {
     }
     println!("\nInstallation complete.");
     if cli {
-        println!("Antigravity CLI: restart the agent to load the updated approval hook.");
+        println!("  ✓ Antigravity CLI: restart the agent to load the updated approval hook.");
     }
     if desktop {
-        println!("Antigravity Desktop: restart the app to load the updated approval sidecar.");
+        println!("  ✓ Antigravity Desktop: restart the app to load the updated approval sidecar.");
     }
     if agents.contains(&Agent::Pi) {
-        println!("Pi: run /reload or restart Pi to load the updated extension.");
+        println!("  ✓ Pi: run /reload or restart Pi to load the updated extension.");
     }
     println!("Check setup: any-auto doctor. Change reviewers: any-auto config --edit.");
     Ok(())
 }
 
 pub fn doctor() -> Result<()> {
-    for (agent, mode) in [
+    for (i, (agent, mode)) in [
         (Agent::AgyCli, config::Mode::Cli),
         (Agent::AgyDesktop, config::Mode::Sidecar),
         (Agent::Pi, config::Mode::Pi),
-    ] {
-        let base = config::home().join(".gemini/config");
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if i > 0 {
+            println!();
+        }
+        println!("{}:", agent.name());
+
+        if agent.detected() {
+            println!("  ✓ agent detected");
+        } else {
+            println!("  ✗ agent not detected");
+        }
+
         let installed = match agent {
-            Agent::AgyCli => std::fs::read(base.join("hooks.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .is_some_and(|v| v["any-auto"]["enabled"] == true),
-            Agent::AgyDesktop => std::fs::read(base.join("config.json"))
-                .ok()
-                .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
-                .is_some_and(|v| v["sidecars"]["any-auto/approver"]["enabled"] == true),
-            Agent::Pi => std::env::var_os("PI_CODING_AGENT_DIR")
-                .map(PathBuf::from)
-                .unwrap_or_else(|| config::home().join(".pi/agent"))
-                .join("extensions/any-auto.ts")
-                .is_file(),
+            Agent::AgyCli => agy::is_cli_enabled(),
+            Agent::AgyDesktop => agy::is_desktop_enabled(),
+            Agent::Pi => pi::is_installed(),
         };
-        println!("  integration_installed={installed}");
+        if installed {
+            println!("  ✓ integration installed");
+        } else {
+            println!("  ✗ integration not installed");
+        }
+
         let settings = config::reviewer_config_for(mode);
-        println!("{}: detected={}", agent.name(), agent.detected());
         match settings {
             Ok(c) => {
                 let available = match c.approver.provider {
@@ -332,13 +324,23 @@ pub fn doctor() -> Result<()> {
                         !c.approver.api_key.trim().is_empty()
                     }
                 };
-                println!(
-                    "  approver={} locally_available={} (authentication/model capability not tested)",
-                    c.approver.provider.as_str(),
-                    available
-                );
+                if available {
+                    println!(
+                        "  ✓ approver: {} (locally available)",
+                        c.approver.provider.as_str()
+                    );
+                } else {
+                    println!(
+                        "  ✗ approver: {} (locally unavailable)",
+                        c.approver.provider.as_str()
+                    );
+                }
             }
-            Err(e) => println!("  configuration error: {e:#}"),
+            Err(e) => println!("  ✗ configuration error: {e:#}"),
+        }
+
+        if agent == Agent::AgyCli {
+            agy::print_cli_turbo_check();
         }
     }
     Ok(())

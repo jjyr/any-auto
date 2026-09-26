@@ -295,7 +295,7 @@ fn hook_aliases_special_ids_and_missing_ids_do_not_share_context() {
         }
         assert_eq!(
             h.hook(mode, Some("../../用户/a"), "conversationId", "DENY")["decision"],
-            "force_ask"
+            "deny"
         );
         assert_eq!(
             h.hook(mode, Some("../../用户?a"), "conversationId", "B1")["decision"],
